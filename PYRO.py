@@ -24,66 +24,38 @@ if not os.path.exists(TEMP_DOWNLOAD_PATH):
 # Create a Pyrogram client
 app = Client("my_bot", api_id=api_id, api_hash=api_hash, bot_token=bot_token)
 
-# Connect to aria2 RPC (no secret)
+# Connect to aria2 RPC
 aria2 = API(
-    Aria2Client(host="http://localhost", port=6800)
+    Aria2Client(host="http://localhost", port=6800, secret="")
 )
-
-# Function to ensure aria2c is running
-def start_aria2c_daemon():
-    try:
-        # Check if aria2c is already running
-        result = subprocess.run(["pgrep", "-x", "aria2c"], stdout=subprocess.PIPE)
-        if result.returncode == 0:
-            logging.info("aria2c is already running.")
-            return
-
-        # Start aria2c with RPC enabled and without a secret
-        subprocess.Popen([
-            "aria2c",
-            "--enable-rpc",
-            "--rpc-listen-all=true",
-            "--rpc-allow-origin-all=true",
-            "--daemon"
-        ])
-        logging.info("aria2c daemon started successfully!")
-    except FileNotFoundError:
-        logging.error("aria2c is not installed. Please install aria2c and try again.")
-        raise
-    except Exception as e:
-        logging.error(f"Failed to start aria2c daemon: {str(e)}")
-        raise
-
 
 # Download using aria2p
 async def download_with_aria2p(link: str, message: Message):
     try:
-        # Add the download to aria2 with options to ignore SSL errors
-        download: Download = aria2.add(link, options={
-            "dir": TEMP_DOWNLOAD_PATH,
-            "check-certificate": "false"  # Disable certificate validation
-        })
+        # Add the download to aria2
+        downloads = aria2.add(link, options={"dir": TEMP_DOWNLOAD_PATH})
+        if not isinstance(downloads, list):
+            downloads = [downloads]  # Ensure we always handle it as a list
 
-        await message.edit_text(f"Started download: {link}")
+        for download in downloads:
+            await message.edit_text(f"Started download: {download.name}")
 
-        # Monitor download progress
-        while not download.is_complete and not download.has_failed:
-            await asyncio.sleep(2)
-            download.update()
+            # Monitor download progress
+            while not download.is_complete:
+                await asyncio.sleep(2)
+                download.update()
+                progress = (
+                    (download.completed_length / download.total_length) * 100
+                    if download.total_length > 0
+                    else 0
+                )
+                await message.edit_text(f"Downloading... {progress:.2f}%")
 
-            progress = (
-                (download.completed_length / download.total_length) * 100
-                if download.total_length > 0 else 0
-            )
-            await message.edit_text(f"Downloading... {progress:.2f}%")
+            # Notify user that download is complete
+            await message.edit_text(f"Download complete: {download.name}")
 
-        if download.has_failed:
-            raise Exception(f"Download failed: {download.error_message}")
-
-        await message.edit_text(f"Download complete: {download.name}")
-
-        # Return the file path
-        return os.path.join(TEMP_DOWNLOAD_PATH, download.name)
+        # Return the file paths
+        return [os.path.join(TEMP_DOWNLOAD_PATH, download.name) for download in downloads]
 
     except Exception as e:
         await message.edit_text(f"Error during download: {str(e)}")
@@ -91,14 +63,15 @@ async def download_with_aria2p(link: str, message: Message):
 
 
 # Upload file to Telegram with progress updates
-async def upload_file(message: Message, file_path: str):
+async def upload_file(message: Message, file_paths: list):
     try:
-        await app.send_document(
-            chat_id=message.chat.id,
-            document=file_path,
-            progress=upload_progress,
-            progress_args=(message,),
-        )
+        for file_path in file_paths:
+            await app.send_document(
+                chat_id=message.chat.id,
+                document=file_path,
+                progress=upload_progress,
+                progress_args=(message,),
+            )
     except Exception as e:
         await message.edit_text(f"Error during upload: {str(e)}")
 
@@ -116,7 +89,7 @@ async def upload_progress(current: int, total: int, message: Message):
 @app.on_message(filters.command("filelink"))
 async def handle_filelink(client: Client, message: Message):
     if len(message.command) < 2:
-        await message.reply("Please provide a valid URL or torrent link. Example: /filelink <url>")
+        await message.reply("Please provide a valid URL. Example: /filelink <url>")
         return
 
     link = message.command[1]
@@ -125,19 +98,20 @@ async def handle_filelink(client: Client, message: Message):
 
     try:
         # Download file with aria2p
-        downloaded_file = await download_with_aria2p(link, progress_message)
+        downloaded_files = await download_with_aria2p(link, progress_message)
 
         # Notify user download is complete
         await progress_message.edit_text("Download complete. Uploading...")
 
-        # Upload file
-        await upload_file(progress_message, downloaded_file)
+        # Upload files
+        await upload_file(progress_message, downloaded_files)
 
         # Notify user of success
-        await progress_message.edit_text("File uploaded successfully!")
+        await progress_message.edit_text("File(s) uploaded successfully!")
 
-        # Clean up downloaded file
-        os.remove(downloaded_file)
+        # Clean up downloaded files
+        for downloaded_file in downloaded_files:
+            os.remove(downloaded_file)
 
     except Exception as e:
         await progress_message.edit_text(f"An error occurred: {str(e)}")
@@ -147,16 +121,13 @@ async def handle_filelink(client: Client, message: Message):
 @app.on_message(filters.command("start"))
 async def start(client: Client, message: Message):
     await message.reply(
-        "Hello! Use /filelink <url> to download and upload a file to Telegram. "
-        "Supports both direct links and torrent links."
+        "Hello! Use /filelink <url> to download and upload a file to Telegram."
     )
 
 
 # Run the bot
 if __name__ == "__main__":
     try:
-        # Ensure aria2c is running
-        start_aria2c_daemon()
         app.run()
     except Exception as e:
         logging.error(f"Failed to start bot: {str(e)}")
