@@ -67,7 +67,7 @@ async def safe_edit_message(message: Message, text: str):
 async def download_with_aria2p(link: str, message: Message):
     try:
         # Check if the download is already in progress using the InfoHash
-        existing_downloads = aria2.get_downloads(status="active")  # Get active downloads
+        existing_downloads = aria2.get_downloads()  # Get all downloads
         for download in existing_downloads:
             if download.gid == link:  # If the download is already in progress (using the GID or InfoHash)
                 await safe_edit_message(message, f"Download for {link} is already in progress.")
@@ -132,9 +132,10 @@ async def upload_progress(current: int, total: int, message: Message):
 @app.on_message(filters.command("status"))
 async def show_download_status(client: Client, message: Message):
     try:
-        active_downloads = aria2.get_downloads(status="active")
-        waiting_downloads = aria2.get_downloads(status="waiting")
-        failed_downloads = aria2.get_downloads(status="failed")
+        all_downloads = aria2.get_downloads()  # Get all downloads
+        active_downloads = [d for d in all_downloads if d.status == "active"]
+        waiting_downloads = [d for d in all_downloads if d.status == "waiting"]
+        failed_downloads = [d for d in all_downloads if d.status == "failed"]
 
         status_message = "Download Status:\n\n"
 
