@@ -65,16 +65,23 @@ async def download_with_aria2p(link: str, message: Message):
         download = downloads[0] if isinstance(downloads, list) else downloads
         
         # Monitor download progress
-        await message.edit_text(f"Started download: {download.name}")
+        previous_message = f"Started download: {download.name}"
+        await message.edit_text(previous_message)
         
         while not download.is_complete:
             await asyncio.sleep(2)
             download.update()
             progress = (download.completed_length / download.total_length) * 100 if download.total_length > 0 else 0
-            await message.edit_text(f"Downloading... {progress:.2f}%")
+            new_message = f"Downloading... {progress:.2f}%"
+            
+            if new_message != previous_message:  # Check if the content has changed
+                await message.edit_text(new_message)
+                previous_message = new_message
         
         # Notify user that download is complete
-        await message.edit_text(f"Download complete: {download.name}")
+        new_message = f"Download complete: {download.name}"
+        if new_message != previous_message:
+            await message.edit_text(new_message)
         
         # Return the file path
         return os.path.join(TEMP_DOWNLOAD_PATH, download.name)
@@ -101,7 +108,11 @@ async def upload_file(message: Message, file_path: str):
 async def upload_progress(current: int, total: int, message: Message):
     try:
         progress = (current / total) * 100
-        await message.edit_text(f"Uploading... {progress:.2f}%")
+        new_message = f"Uploading... {progress:.2f}%"
+        
+        # Only edit the message if the content is different
+        if new_message != message.text:
+            await message.edit_text(new_message)
     except Exception as e:
         logging.error(f"Error updating upload progress: {str(e)}")
 
