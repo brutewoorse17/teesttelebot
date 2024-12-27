@@ -16,13 +16,25 @@ bot_token = '7505846620:AAFvv-sFybGfFILS-dRC8l7ph_0rqIhDgRM'  # Replace with you
 # Directory to temporarily save downloaded files
 TEMP_DOWNLOAD_PATH = "./downloads"
 
+# Ensure the directory exists
+if not os.path.exists(TEMP_DOWNLOAD_PATH):
+    os.makedirs(TEMP_DOWNLOAD_PATH)
+
 # Create a Pyrogram client
 app = Client("my_bot", api_id=api_id, api_hash=api_hash, bot_token=bot_token)
 
 # Connect to aria2c RPC
 aria2 = API(
-    Aria2Client(host="http://localhost", port=6800, secret="")
+    Aria2Client(host="http://localhost", port=6800, secret="")  # Update `secret` if you've set an RPC secret
 )
+
+# Function to ensure aria2c is running
+def start_aria2c_daemon():
+    try:
+        os.system("aria2c --enable-rpc --rpc-listen-all=true --rpc-allow-origin-all --daemon")
+        logging.info("aria2c daemon started successfully!")
+    except Exception as e:
+        logging.error(f"Failed to start aria2c daemon: {str(e)}")
 
 
 # Download using aria2p
@@ -114,4 +126,6 @@ async def start(client: Client, message: Message):
 
 # Run the bot
 if __name__ == "__main__":
+    # Ensure aria2c is running
+    start_aria2c_daemon()
     app.run()
