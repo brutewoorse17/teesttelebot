@@ -58,11 +58,10 @@ def start_aria2c_daemon():
         raise
 
 # Safe function to edit message to avoid Telegram errors
-async def safe_edit_message(message: Message, text: str):
+async def safe_edit_message(message: Message, new_text: str):
     try:
-        # Check if the message exists before editing
-        if message.text != text:  # Only edit if the content is different
-            await message.edit_text(text)
+        if message.text != new_text:  # Only edit if the content is different
+            await message.edit_text(new_text)
     except Exception as e:
         logging.error(f"Error editing message: {str(e)}")
         # If the message was deleted or is invalid, we log the error and do not try to edit
