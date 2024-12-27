@@ -29,9 +29,6 @@ aria2 = API(
     Aria2Client(host="http://localhost", port=6800, secret="")
 )
 
-# Dictionary to keep track of active downloads
-active_downloads = {}
-
 # Function to ensure aria2c is running
 def start_aria2c_daemon():
     try:
@@ -57,11 +54,13 @@ def start_aria2c_daemon():
         logging.error(f"Failed to start aria2c daemon: {str(e)}")
         raise
 
+
 # Safe function to edit message to avoid Telegram errors
-async def safe_edit_message(message: Message, new_text: str):
+async def safe_edit_message(message: Message, text: str):
     try:
-        if message.text != new_text:  # Only edit if the content is different
-            await message.edit_text(new_text)
+        # Check if the message exists before editing
+        if message.text != text:  # Only edit if the content is different
+            await message.edit_text(text)
     except Exception as e:
         logging.error(f"Error editing message: {str(e)}")
         # If the message was deleted or is invalid, we log the error and do not try to edit
@@ -70,18 +69,12 @@ async def safe_edit_message(message: Message, new_text: str):
         else:
             logging.error(f"Unexpected error: {str(e)}")
 
+
 # Download using aria2p
 async def download_with_aria2p(link: str, message: Message):
     try:
-        # Add the download to aria2 and get the list of downloads (even if there's only one)
-        downloads = aria2.add(link, options={"dir": TEMP_DOWNLOAD_PATH})
-
-        # Since aria2.add() returns a list, we access the first download
-        download = downloads[0]
-
-        # Track the download using its gid (Global ID)
-        active_downloads[download.gid] = download
-
+        # Add the download to aria2
+        download: Download = aria2.add(link, options={"dir": TEMP_DOWNLOAD_PATH})
         await safe_edit_message(message, f"Started download: {download.name}")
 
         # Monitor download progress
@@ -101,6 +94,7 @@ async def download_with_aria2p(link: str, message: Message):
         await safe_edit_message(message, f"Error during download: {str(e)}")
         raise
 
+
 # Upload file to Telegram with progress updates
 async def upload_file(message: Message, file_path: str):
     try:
@@ -113,6 +107,7 @@ async def upload_file(message: Message, file_path: str):
     except Exception as e:
         await safe_edit_message(message, f"Error during upload: {str(e)}")
 
+
 # Upload progress callback
 async def upload_progress(current: int, total: int, message: Message):
     try:
@@ -120,6 +115,7 @@ async def upload_progress(current: int, total: int, message: Message):
         await safe_edit_message(message, f"Uploading... {progress:.2f}%")
     except Exception as e:
         logging.error(f"Error updating upload progress: {str(e)}")
+
 
 # Command handler to download and upload a file
 @app.on_message(filters.command("filelink"))
@@ -136,50 +132,30 @@ async def handle_filelink(client: Client, message: Message):
         # Download file with aria2p
         downloaded_file = await download_with_aria2p(link, progress_message)
 
-        if downloaded_file:  # Proceed only if download was successful
-            # Notify user download is complete
-            await safe_edit_message(progress_message, "Download complete. Uploading...")
+        # Notify user download is complete
+        await safe_edit_message(progress_message, "Download complete. Uploading...")
 
-            # Upload file
-            await upload_file(progress_message, downloaded_file)
+        # Upload file
+        await upload_file(progress_message, downloaded_file)
 
-            # Notify user of success
-            await safe_edit_message(progress_message, "File uploaded successfully!")
+        # Notify user of success
+        await safe_edit_message(progress_message, "File uploaded successfully!")
 
-            # Clean up downloaded file
-            os.remove(downloaded_file)
+        # Clean up downloaded file
+        os.remove(downloaded_file)
 
     except Exception as e:
         await safe_edit_message(progress_message, f"An error occurred: {str(e)}")
+
 
 # Command handler for /start
 @app.on_message(filters.command("start"))
 async def start(client: Client, message: Message):
     await message.reply(
         "Hello! Use /filelink <url> to download and upload a file to Telegram. "
-        "Supports both direct links and torrent links. You can also cancel downloads with /cancel <download_id>."
+        "Supports both direct links and torrent links."
     )
 
-# Command handler to cancel download
-@app.on_message(filters.command("cancel"))
-async def cancel_download(client: Client, message: Message):
-    if len(message.command) < 2:
-        await message.reply("Please provide a download ID to cancel. Example: /cancel <download_id>")
-        return
-
-    download_id = message.command[1]
-
-    if download_id in active_downloads:
-        download = active_downloads[download_id]
-        try:
-            # Abort the download
-            aria2.remove(download.gid, force=True)
-            await safe_edit_message(message, f"Download {download.name} (ID: {download.gid}) has been canceled.")
-            del active_downloads[download.gid]  # Remove from active downloads
-        except Exception as e:
-            await safe_edit_message(message, f"Error canceling download: {str(e)}")
-    else:
-        await message.reply(f"No active download found with ID: {download_id}")
 
 # Command handler to show active, waiting, and failed downloads
 @app.on_message(filters.command("status"))
@@ -200,17 +176,17 @@ async def show_download_status(client: Client, message: Message):
                     if download.total_length > 0
                     else 0
                 )
-                status_message += f"- {download.name}: {progress:.2f}% complete\n"
+                status_message += f"- {download.name} (GID: {download.gid}): {progress:.2f}% complete\n"
 
         if waiting_downloads:
             status_message += "\nWaiting Downloads:\n"
             for download in waiting_downloads:
-                status_message += f"- {download.name}: Waiting\n"
+                status_message += f"- {download.name} (GID: {download.gid}): Waiting\n"
 
         if failed_downloads:
             status_message += "\nFailed Downloads:\n"
             for download in failed_downloads:
-                status_message += f"- {download.name}: Failed\n"
+                status_message += f"- {download.name} (GID: {download.gid}): Failed\n"
 
         if not (active_downloads or waiting_downloads or failed_downloads):
             status_message += "No downloads in progress.\n"
@@ -223,6 +199,7 @@ async def show_download_status(client: Client, message: Message):
 
 
 # Run the bot
+
 if __name__ == "__main__":
     try:
         # Ensure aria2c is running
