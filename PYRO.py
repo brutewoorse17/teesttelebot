@@ -7,7 +7,7 @@ from pyrogram.types import Message
 # Set up the Aria2 connection (without RPC secret)
 aria2 = aria2p.API(
     aria2p.Client(
-        host="http://127.0.0.1",  # Aria2 server IP, change if needed
+        host="http://127.0.0.1",  # Aria2 server IP
         port=6800  # Aria2 RPC server port
     )
 )
@@ -40,8 +40,8 @@ async def add_download(url: str):
 
 async def monitor_download(gid: str, chat_id: int):
     """Monitor the download progress and upload once completed"""
-    while True:
-        try:
+    try:
+        while True:
             status = aria2.get_download_status(gid)
             download_statuses[gid]['progress'] = (status.completedLength / status.totalLength) * 100
             if status.status == "complete":
@@ -58,16 +58,13 @@ async def monitor_download(gid: str, chat_id: int):
             else:
                 print(f"GID: {gid} | Progress: {download_statuses[gid]['progress']:.2f}%")
             await asyncio.sleep(1)
-        except Exception as e:
-            print(f"Error monitoring download {gid}: {e}")
-            break
+    except Exception as e:
+        print(f"Error monitoring download {gid}: {e}")
 
 async def upload_file_to_telegram(chat_id: int, file_path: str):
     """Upload the file to Telegram after download completion"""
     try:
-        # Check if the file exists
         if os.path.exists(file_path):
-            # Send the file to the specified chat
             print(f"Uploading {file_path} to Telegram chat {chat_id}...")
             await app.send_document(chat_id, file_path)
             print(f"File {file_path} uploaded successfully.")
@@ -85,7 +82,7 @@ async def add_download_command(client: Client, message: Message):
         if gid:
             await message.reply_text(f"Download added with GID: {gid}")
             # Monitor download for this GID and upload to the user chat once complete
-            await monitor_download(gid, message.chat.id)
+            asyncio.create_task(monitor_download(gid, message.chat.id))  # Run download monitoring in background
         else:
             await message.reply_text("Error adding the download.")
     else:
@@ -119,12 +116,12 @@ async def cancel_download_command(client: Client, message: Message):
 
 async def main():
     """Starts the Pyrogram client and runs the Aria2 monitoring in the same loop."""
-    # Start the Pyrogram client
-    await app.start()
-
-    # Run the Aria2 monitoring logic in the same event loop
+    await app.start()  # Start the Pyrogram bot
+    
+    # Run the bot indefinitely without blocking the event loop
     while True:
-        await asyncio.sleep(10)
+        await asyncio.sleep(10)  # Keep the loop alive for 10 seconds at a time
 
 if __name__ == "__main__":
+    # Run the main function inside the asyncio event loop
     asyncio.run(main())
