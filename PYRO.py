@@ -9,10 +9,9 @@ ARIA2_RPC_SECRET = "your_aria2_secret"
 ARIA2_RPC_URL = "http://localhost:6800/rpc"
 
 # Telegram Bot settings
-API_ID = 29001415
-API_HASH = "92152fd62ffbff12f057edc057f978f1"
-BOT_TOKEN = "7505846620:AAFvv-sFybGfFILS-dRC8l7ph_0rqIhDgRM"
-
+API_ID = 1234567
+API_HASH = "your_api_hash"
+BOT_TOKEN = "your_bot_token"
 
 # Initialize Pyrogram Client
 app = Client(
@@ -98,13 +97,5 @@ async def handle_torrent(client: Client, message: Message):
         await message.reply_text("Please send a valid .torrent file.")
 
 # Start the bot
-async def main():
-    try:
-        await app.start()  # Use await here to properly start the bot
-        print("Bot is running...")
-        await app.idle()  # idles the bot until stopped
-    except Exception as e:
-        print(f"Error starting the bot: {e}")
-
 if __name__ == "__main__":
-    asyncio.run(main())
+    app.run()  # Using app.run() to start the bot
