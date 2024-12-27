@@ -1,101 +1,126 @@
+import asyncio
+import aria2p
+import os
 from pyrogram import Client, filters
 from pyrogram.types import Message
-import xmlrpc.client
-import os
-import asyncio
 
-# Aria2 RPC settings
-ARIA2_RPC_SECRET = "your_aria2_secret"
-ARIA2_RPC_URL = "http://localhost:6800/rpc"
+# Set up the Aria2 connection (without RPC secret)
+aria2 = aria2p.API(
+    aria2p.Client(
+        host="http://127.0.0.1",  # Aria2 server IP, change if needed
+        port=6800  # Aria2 RPC server port
+    )
+)
 
-# Telegram Bot settings
+# Create Pyrogram client
 API_ID = 29001415
 API_HASH = "92152fd62ffbff12f057edc057f978f1"
 BOT_TOKEN = "7505846620:AAFvv-sFybGfFILS-dRC8l7ph_0rqIhDgRM"
 
-# Initialize Pyrogram Client
 app = Client(
-    "aria2_bot",
+    "my_bot",
     api_id=API_ID,
     api_hash=API_HASH,
     bot_token=BOT_TOKEN
 )
 
-# Aria2 RPC Client
-aria2 = xmlrpc.client.ServerProxy(ARIA2_RPC_URL)
+# Global dictionary to store download statuses
+download_statuses = {}
 
-# Function to fetch aria2 stats
-@app.on_message(filters.command("stats"))
-async def get_stats(client: Client, message: Message):
-    """Fetch and display download stats from aria2."""
+async def add_download(url: str):
+    """Add a download to Aria2"""
     try:
-        stats = aria2.aria2.getGlobalStat(ARIA2_RPC_SECRET)
-        message_text = (
-            "**Aria2 Download Stats:**\n\n"
-            f"**Download Speed:** `{int(stats['downloadSpeed']) / 1024:.2f} KB/s`\n"
-            f"**Upload Speed:** `{int(stats['uploadSpeed']) / 1024:.2f} KB/s`\n"
-            f"**Active Downloads:** `{stats['numActive']}`\n"
-            f"**Waiting Downloads:** `{stats['numWaiting']}`\n"
-            f"**Stopped Downloads:** `{stats['numStopped']}`"
-        )
-        # Use the split text approach to avoid message too long error
-        if len(message_text) > 4096:
-            parts = [message_text[i:i+4096] for i in range(0, len(message_text), 4096)]
-            for part in parts:
-                await message.reply_text(part, parse_mode="markdown")
-        else:
-            await message.reply_text(message_text, parse_mode="markdown")
+        download = aria2.add(uri=url)
+        print(f"Download added with GID: {download.gid}")
+        download_statuses[download.gid] = {"status": "active", "progress": 0, "file_path": None}
+        return download.gid
     except Exception as e:
-        await message.reply_text(f"Error fetching stats: {e}")
+        print(f"Error adding download: {e}")
+        return None
 
-# Function to add a download
-@app.on_message(filters.command("add"))
-async def add_download(client: Client, message: Message):
-    """Add a new download to aria2 using a URL."""
-    if len(message.command) > 1:
-        url = message.command[1]
+async def monitor_download(gid: str, chat_id: int):
+    """Monitor the download progress and upload once completed"""
+    while True:
         try:
-            gid = aria2.aria2.addUri(ARIA2_RPC_SECRET, [url])
-            await message.reply_text(f"Download added successfully! GID: `{gid}`", parse_mode="markdown")
-        except Exception as e:
-            await message.reply_text(f"Error adding download: {e}")
-    else:
-        await message.reply_text("Please provide a URL to download. Usage: /add <URL>")
-
-# Function to cancel a download
-@app.on_message(filters.command("cancel"))
-async def cancel_download(client: Client, message: Message):
-    """Cancel a download by GID."""
-    if len(message.command) > 1:
-        gid = message.command[1]
-        try:
-            removed = aria2.aria2.remove(ARIA2_RPC_SECRET, gid)
-            if removed:
-                await message.reply_text(f"Download canceled successfully! GID: `{gid}`", parse_mode="markdown")
+            status = aria2.get_download_status(gid)
+            download_statuses[gid]['progress'] = (status.completedLength / status.totalLength) * 100
+            if status.status == "complete":
+                download_statuses[gid]['file_path'] = status.files[0].filePath  # Get the file path
+                print(f"Download complete: {gid}, file saved at {status.files[0].filePath}")
+                download_statuses[gid]['status'] = "complete"
+                # Upload the file to Telegram after download completion
+                await upload_file_to_telegram(chat_id, status.files[0].filePath)
+                break
+            elif status.status == "failed":
+                print(f"Download failed: {gid}")
+                download_statuses[gid]['status'] = "failed"
+                break
             else:
-                await message.reply_text(f"Failed to cancel download for GID: `{gid}`", parse_mode="markdown")
+                print(f"GID: {gid} | Progress: {download_statuses[gid]['progress']:.2f}%")
+            await asyncio.sleep(1)
         except Exception as e:
-            await message.reply_text(f"Error canceling download: {e}")
-    else:
-        await message.reply_text("Please provide a GID to cancel. Usage: /cancel <GID>")
+            print(f"Error monitoring download {gid}: {e}")
+            break
 
-# Function to handle .torrent files
-@app.on_message(filters.document)
-async def handle_torrent(client: Client, message: Message):
-    """Add a .torrent file to aria2."""
-    if message.document.mime_type == "application/x-bittorrent":
+async def upload_file_to_telegram(chat_id: int, file_path: str):
+    """Upload the file to Telegram after download completion"""
+    try:
+        # Check if the file exists
+        if os.path.exists(file_path):
+            # Send the file to the specified chat
+            print(f"Uploading {file_path} to Telegram chat {chat_id}...")
+            await app.send_document(chat_id, file_path)
+            print(f"File {file_path} uploaded successfully.")
+        else:
+            print(f"File {file_path} not found!")
+    except Exception as e:
+        print(f"Error uploading file to Telegram: {e}")
+
+@app.on_message(filters.command("add_download"))
+async def add_download_command(client: Client, message: Message):
+    """Handles adding a new download via command."""
+    url = message.text.split(" ", 1)[1] if len(message.command) > 1 else None
+    if url:
+        gid = await add_download(url)
+        if gid:
+            await message.reply_text(f"Download added with GID: {gid}")
+            # Monitor download for this GID and upload to the user chat once complete
+            await monitor_download(gid, message.chat.id)
+        else:
+            await message.reply_text("Error adding the download.")
+    else:
+        await message.reply_text("Please provide a valid URL. Usage: /add_download <URL>")
+
+@app.on_message(filters.command("download_status"))
+async def download_status_command(client: Client, message: Message):
+    """Handles checking the download status via command."""
+    gid = message.text.split(" ", 1)[1] if len(message.command) > 1 else None
+    if gid and gid in download_statuses:
+        status = download_statuses[gid]
+        await message.reply_text(
+            f"Download GID: {gid}\nStatus: {status['status']}\nProgress: {status['progress']:.2f}%"
+        )
+    else:
+        await message.reply_text("Invalid or missing GID.")
+
+@app.on_message(filters.command("cancel_download"))
+async def cancel_download_command(client: Client, message: Message):
+    """Handles canceling a download via command."""
+    gid = message.text.split(" ", 1)[1] if len(message.command) > 1 else None
+    if gid and gid in download_statuses:
         try:
-            file = await message.download()
-            with open(file, "rb") as torrent_file:
-                torrent_data = xmlrpc.client.Binary(torrent_file.read())
-            gid = aria2.aria2.addTorrent(ARIA2_RPC_SECRET, torrent_data)
-            os.remove(file)  # Clean up the downloaded file
-            await message.reply_text(f"Torrent added successfully! GID: `{gid}`", parse_mode="markdown")
+            aria2.remove(gid)
+            download_statuses[gid]['status'] = 'cancelled'
+            await message.reply_text(f"Download {gid} has been cancelled.")
         except Exception as e:
-            await message.reply_text(f"Error adding torrent: {e}")
+            await message.reply_text(f"Error canceling the download: {e}")
     else:
-        await message.reply_text("Please send a valid .torrent file.")
+        await message.reply_text("Invalid or missing GID.")
 
-# Start the bot
+# Start the client
+async def main():
+    async with app:
+        await app.run()
+
 if __name__ == "__main__":
-    app.run()  # Using app.run() to start the bot
+    asyncio.run(main())
