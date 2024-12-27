@@ -1,6 +1,6 @@
 import os
 import logging
-import aiohttp
+import subprocess
 import asyncio
 from pyrogram import Client, filters
 from pyrogram.types import Message
@@ -21,28 +21,45 @@ TEMP_DOWNLOAD_PATH = './downloads'
 app = Client("my_bot", api_id=api_id, api_hash=api_hash, bot_token=bot_token)
 
 
-# Async file downloader with progress updates
-async def download_file(url: str, file_path: str, message: Message):
+# Download file using aria2c
+async def download_with_aria2c(link: str, output_dir: str, message: Message):
     try:
-        async with aiohttp.ClientSession() as session:
-            async with session.get(url) as response:
-                file_size = int(response.headers.get("content-length", 0))
-                downloaded_size = 0
+        # Ensure the downloads directory exists
+        os.makedirs(output_dir, exist_ok=True)
 
-                # Ensure the file directory exists
-                os.makedirs(os.path.dirname(file_path), exist_ok=True)
+        # Prepare the aria2c command
+        command = [
+            "aria2c",
+            "--dir", output_dir,
+            "--max-connection-per-server=16",
+            "--split=16",
+            "--allow-overwrite=true",
+            link,
+        ]
 
-                with open(file_path, "wb") as file:
-                    async for chunk in response.content.iter_chunked(1024):
-                        if chunk:
-                            file.write(chunk)
-                            downloaded_size += len(chunk)
+        # Notify the user about the download start
+        await message.edit_text("Starting download with aria2c...")
 
-                            # Update download progress
-                            progress = (downloaded_size / file_size) * 100
-                            await message.edit_text(f"Downloading... {progress:.2f}%")
+        # Use subprocess to run the aria2c command
+        process = subprocess.Popen(
+            command, stdout=subprocess.PIPE, stderr=subprocess.PIPE
+        )
 
-        return file_path
+        # Monitor the progress
+        while process.poll() is None:
+            await asyncio.sleep(1)
+
+        # Check if the download succeeded
+        stdout, stderr = process.communicate()
+        if process.returncode != 0:
+            error_message = stderr.decode("utf-8")
+            raise Exception(f"aria2c download failed: {error_message}")
+
+        # Notify the user of successful download
+        await message.edit_text("Download complete!")
+
+        # Return the path to the downloaded file or directory
+        return output_dir
 
     except Exception as e:
         await message.edit_text(f"Error during download: {str(e)}")
@@ -78,30 +95,43 @@ async def upload_progress(current: int, total: int, message: Message):
 @app.on_message(filters.command("filelink"))
 async def handle_filelink(client: Client, message: Message):
     if len(message.command) < 2:
-        await message.reply("Please provide a valid URL. Example: /filelink <url>")
+        await message.reply("Please provide a valid URL or torrent link. Example: /filelink <url>")
         return
 
-    file_url = message.command[1]
-    filename = file_url.split("/")[-1]
-    file_path = os.path.join(TEMP_DOWNLOAD_PATH, filename)
+    link = message.command[1]
 
-    progress_message = await message.reply("Starting download...")
+    progress_message = await message.reply("Preparing to download...")
 
     try:
-        # Download file
-        await download_file(file_url, file_path, progress_message)
+        # Download file with aria2c
+        downloaded_path = await download_with_aria2c(link, TEMP_DOWNLOAD_PATH, progress_message)
 
-        # Notify user download is complete
-        await progress_message.edit_text("Download complete. Uploading...")
+        # Check if multiple files are downloaded (for torrents)
+        if os.path.isdir(downloaded_path):
+            # Archive the folder (if needed) before uploading
+            await progress_message.edit_text("Downloaded multiple files. Preparing to upload...")
 
-        # Upload file
-        await upload_file(progress_message, file_path)
+            for root, _, files in os.walk(downloaded_path):
+                for file in files:
+                    full_path = os.path.join(root, file)
+                    await upload_file(progress_message, full_path)
 
-        # Clean up downloaded file
-        os.remove(file_path)
+            # Notify the user that all files are uploaded
+            await progress_message.edit_text("All files from torrent uploaded successfully!")
+        else:
+            # Notify user download is complete
+            await progress_message.edit_text("Download complete. Uploading...")
 
-        # Notify user of success
-        await progress_message.edit_text("File uploaded successfully!")
+            # Upload file
+            await upload_file(progress_message, downloaded_path)
+
+            # Notify user of success
+            await progress_message.edit_text("File uploaded successfully!")
+
+        # Clean up downloaded files
+        for root, dirs, files in os.walk(TEMP_DOWNLOAD_PATH):
+            for name in files:
+                os.remove(os.path.join(root, name))
 
     except Exception as e:
         await progress_message.edit_text(f"An error occurred: {str(e)}")
@@ -110,7 +140,10 @@ async def handle_filelink(client: Client, message: Message):
 # Command handler for /start
 @app.on_message(filters.command("start"))
 async def start(client: Client, message: Message):
-    await message.reply("Hello! Use /filelink <url> to download and upload a file to Telegram.")
+    await message.reply(
+        "Hello! Use /filelink <url> to download and upload a file to Telegram. "
+        "Supports both direct links and torrent links."
+    )
 
 
 # Run the bot
