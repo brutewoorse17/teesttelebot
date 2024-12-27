@@ -1,10 +1,9 @@
 import os
-import logging
-import subprocess
 import asyncio
+import logging
 from pyrogram import Client, filters
 from pyrogram.types import Message
-from pyrogram.errors import FloodWait
+from aria2p import API, Client as Aria2Client, Download
 
 # Enable logging
 logging.basicConfig(level=logging.INFO)
@@ -15,51 +14,36 @@ api_hash = '92152fd62ffbff12f057edc057f978f1'  # Replace with your API Hash
 bot_token = '7505846620:AAFvv-sFybGfFILS-dRC8l7ph_0rqIhDgRM'  # Replace with your Bot Token
 
 # Directory to temporarily save downloaded files
-TEMP_DOWNLOAD_PATH = './downloads'
+TEMP_DOWNLOAD_PATH = "./downloads"
 
 # Create a Pyrogram client
 app = Client("my_bot", api_id=api_id, api_hash=api_hash, bot_token=bot_token)
 
+# Connect to aria2c RPC
+aria2 = API(
+    Aria2Client(host="http://localhost", port=6800, secret="")
+)
 
-# Download file using aria2c
-async def download_with_aria2c(link: str, output_dir: str, message: Message):
+
+# Download using aria2p
+async def download_with_aria2p(link: str, message: Message):
     try:
-        # Ensure the downloads directory exists
-        os.makedirs(output_dir, exist_ok=True)
+        # Add the download to aria2
+        download: Download = aria2.add(link, options={"dir": TEMP_DOWNLOAD_PATH})
+        await message.edit_text(f"Started download: {download.name}")
 
-        # Prepare the aria2c command
-        command = [
-            "aria2c",
-            "--dir", output_dir,
-            "--max-connection-per-server=16",
-            "--split=16",
-            "--allow-overwrite=true",
-            link,
-        ]
+        # Monitor download progress
+        while not download.is_complete:
+            await asyncio.sleep(2)
+            download.update()
+            progress = (download.completed_length / download.total_length) * 100 if download.total_length > 0 else 0
+            await message.edit_text(f"Downloading... {progress:.2f}%")
 
-        # Notify the user about the download start
-        await message.edit_text("Starting download with aria2c...")
+        # Notify user that download is complete
+        await message.edit_text(f"Download complete: {download.name}")
 
-        # Use subprocess to run the aria2c command
-        process = subprocess.Popen(
-            command, stdout=subprocess.PIPE, stderr=subprocess.PIPE
-        )
-
-        # Monitor the progress
-        while process.poll() is None:
-            await asyncio.sleep(1)
-
-        # Check if the download succeeded
-        stdout, stderr = process.communicate()
-        if process.returncode != 0:
-            error_message = stderr.decode("utf-8")
-            raise Exception(f"aria2c download failed: {error_message}")
-
-        # Notify the user of successful download
-        await message.edit_text("Download complete!")
-
-        # Return the path to the downloaded file or directory
-        return output_dir
+        # Return the file path
+        return os.path.join(TEMP_DOWNLOAD_PATH, download.name)
 
     except Exception as e:
         await message.edit_text(f"Error during download: {str(e)}")
@@ -75,9 +59,6 @@ async def upload_file(message: Message, file_path: str):
             progress=upload_progress,
             progress_args=(message,),
         )
-    except FloodWait as e:
-        await asyncio.sleep(e.x)
-        await message.edit_text(f"Rate limit exceeded. Retrying in {e.x} seconds.")
     except Exception as e:
         await message.edit_text(f"Error during upload: {str(e)}")
 
@@ -103,35 +84,20 @@ async def handle_filelink(client: Client, message: Message):
     progress_message = await message.reply("Preparing to download...")
 
     try:
-        # Download file with aria2c
-        downloaded_path = await download_with_aria2c(link, TEMP_DOWNLOAD_PATH, progress_message)
+        # Download file with aria2p
+        downloaded_file = await download_with_aria2p(link, progress_message)
 
-        # Check if multiple files are downloaded (for torrents)
-        if os.path.isdir(downloaded_path):
-            # Archive the folder (if needed) before uploading
-            await progress_message.edit_text("Downloaded multiple files. Preparing to upload...")
+        # Notify user download is complete
+        await progress_message.edit_text("Download complete. Uploading...")
 
-            for root, _, files in os.walk(downloaded_path):
-                for file in files:
-                    full_path = os.path.join(root, file)
-                    await upload_file(progress_message, full_path)
+        # Upload file
+        await upload_file(progress_message, downloaded_file)
 
-            # Notify the user that all files are uploaded
-            await progress_message.edit_text("All files from torrent uploaded successfully!")
-        else:
-            # Notify user download is complete
-            await progress_message.edit_text("Download complete. Uploading...")
+        # Notify user of success
+        await progress_message.edit_text("File uploaded successfully!")
 
-            # Upload file
-            await upload_file(progress_message, downloaded_path)
-
-            # Notify user of success
-            await progress_message.edit_text("File uploaded successfully!")
-
-        # Clean up downloaded files
-        for root, dirs, files in os.walk(TEMP_DOWNLOAD_PATH):
-            for name in files:
-                os.remove(os.path.join(root, name))
+        # Clean up downloaded file
+        os.remove(downloaded_file)
 
     except Exception as e:
         await progress_message.edit_text(f"An error occurred: {str(e)}")
