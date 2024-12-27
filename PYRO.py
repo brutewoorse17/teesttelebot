@@ -21,6 +21,9 @@ TEMP_DOWNLOAD_PATH = "./downloads"
 if not os.path.exists(TEMP_DOWNLOAD_PATH):
     os.makedirs(TEMP_DOWNLOAD_PATH)
 
+# Create a Pyrogram client
+app = Client("my_bot", api_id=api_id, api_hash=api_hash, bot_token=bot_token)
+
 # Connect to aria2 RPC
 aria2 = API(
     Aria2Client(host="http://localhost", port=6800, secret="")
