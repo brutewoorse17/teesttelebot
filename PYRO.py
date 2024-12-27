@@ -55,34 +55,50 @@ def start_aria2c_daemon():
         raise
 
 
-# Download using aria2p
+# Download using aria2p with timeout
 async def download_with_aria2p(link: str, message: Message):
     try:
         # Add the download to aria2
         downloads = aria2.add(link, options={"dir": TEMP_DOWNLOAD_PATH})
-        
-        # Ensure we're working with a single Download object
         download = downloads[0] if isinstance(downloads, list) else downloads
-        
+
         # Monitor download progress
         previous_message = f"Started download: {download.name}"
         await message.edit_text(previous_message)
-        
-        while not download.is_complete:
-            await asyncio.sleep(2)
+
+        timeout = 600  # 10 minutes timeout
+        elapsed_time = 0
+        interval = 2  # Check progress every 2 seconds
+
+        while not download.is_complete and not download.has_failed:
+            await asyncio.sleep(interval)
+            elapsed_time += interval
             download.update()
-            progress = (download.completed_length / download.total_length) * 100 if download.total_length > 0 else 0
+
+            if download.error_message:
+                raise Exception(f"Download failed: {download.error_message}")
+
+            if elapsed_time >= timeout:
+                # Stop the download if it exceeds the timeout
+                aria2.remove([download], force=True)
+                raise Exception("Download timed out.")
+
+            progress = (
+                (download.completed_length / download.total_length) * 100
+                if download.total_length > 0 else 0
+            )
             new_message = f"Downloading... {progress:.2f}%"
-            
-            if new_message != previous_message:  # Check if the content has changed
+            if new_message != previous_message:
                 await message.edit_text(new_message)
                 previous_message = new_message
-        
-        # Notify user that download is complete
+
+        if download.has_failed:
+            raise Exception(f"Download failed for link: {link}")
+
         new_message = f"Download complete: {download.name}"
         if new_message != previous_message:
             await message.edit_text(new_message)
-        
+
         # Return the file path
         return os.path.join(TEMP_DOWNLOAD_PATH, download.name)
 
@@ -109,8 +125,6 @@ async def upload_progress(current: int, total: int, message: Message):
     try:
         progress = (current / total) * 100
         new_message = f"Uploading... {progress:.2f}%"
-        
-        # Only edit the message if the content is different
         if new_message != message.text:
             await message.edit_text(new_message)
     except Exception as e:
@@ -125,7 +139,6 @@ async def handle_filelink(client: Client, message: Message):
         return
 
     link = message.command[1]
-
     progress_message = await message.reply("Preparing to download...")
 
     try:
