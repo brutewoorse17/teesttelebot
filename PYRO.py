@@ -55,11 +55,14 @@ def start_aria2c_daemon():
         raise
 
 
-# Download using aria2p with timeout
+# Download using aria2p
 async def download_with_aria2p(link: str, message: Message):
     try:
-        # Add the download to aria2
-        downloads = aria2.add(link, options={"dir": TEMP_DOWNLOAD_PATH})
+        # Add the download to aria2 with options to ignore SSL errors
+        downloads = aria2.add(link, options={
+            "dir": TEMP_DOWNLOAD_PATH,
+            "check-certificate": "false"  # Disable certificate validation
+        })
         download = downloads[0] if isinstance(downloads, list) else downloads
 
         # Monitor download progress
@@ -124,9 +127,7 @@ async def upload_file(message: Message, file_path: str):
 async def upload_progress(current: int, total: int, message: Message):
     try:
         progress = (current / total) * 100
-        new_message = f"Uploading... {progress:.2f}%"
-        if new_message != message.text:
-            await message.edit_text(new_message)
+        await message.edit_text(f"Uploading... {progress:.2f}%")
     except Exception as e:
         logging.error(f"Error updating upload progress: {str(e)}")
 
@@ -139,6 +140,7 @@ async def handle_filelink(client: Client, message: Message):
         return
 
     link = message.command[1]
+
     progress_message = await message.reply("Preparing to download...")
 
     try:
