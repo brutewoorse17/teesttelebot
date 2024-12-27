@@ -59,19 +59,23 @@ def start_aria2c_daemon():
 async def download_with_aria2p(link: str, message: Message):
     try:
         # Add the download to aria2
-        download: Download = aria2.add(link, options={"dir": TEMP_DOWNLOAD_PATH})
-        await message.edit_text(f"Started download: {download.name}")
-
+        downloads = aria2.add(link, options={"dir": TEMP_DOWNLOAD_PATH})
+        
+        # Ensure we're working with a single Download object
+        download = downloads[0] if isinstance(downloads, list) else downloads
+        
         # Monitor download progress
+        await message.edit_text(f"Started download: {download.name}")
+        
         while not download.is_complete:
             await asyncio.sleep(2)
             download.update()
             progress = (download.completed_length / download.total_length) * 100 if download.total_length > 0 else 0
             await message.edit_text(f"Downloading... {progress:.2f}%")
-
+        
         # Notify user that download is complete
         await message.edit_text(f"Download complete: {download.name}")
-
+        
         # Return the file path
         return os.path.join(TEMP_DOWNLOAD_PATH, download.name)
 
