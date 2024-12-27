@@ -54,7 +54,6 @@ def start_aria2c_daemon():
         logging.error(f"Failed to start aria2c daemon: {str(e)}")
         raise
 
-
 # Safe function to edit message to avoid Telegram errors
 async def safe_edit_message(message: Message, text: str):
     try:
@@ -69,12 +68,15 @@ async def safe_edit_message(message: Message, text: str):
         else:
             logging.error(f"Unexpected error: {str(e)}")
 
-
 # Download using aria2p
 async def download_with_aria2p(link: str, message: Message):
     try:
-        # Add the download to aria2
-        download: Download = aria2.add(link, options={"dir": TEMP_DOWNLOAD_PATH})
+        # Add the download to aria2 and get the list of downloads (even if there's only one)
+        downloads = aria2.add(link, options={"dir": TEMP_DOWNLOAD_PATH})
+
+        # Since aria2.add() returns a list, we access the first download
+        download = downloads[0]
+
         await safe_edit_message(message, f"Started download: {download.name}")
 
         # Monitor download progress
@@ -94,7 +96,6 @@ async def download_with_aria2p(link: str, message: Message):
         await safe_edit_message(message, f"Error during download: {str(e)}")
         raise
 
-
 # Upload file to Telegram with progress updates
 async def upload_file(message: Message, file_path: str):
     try:
@@ -107,7 +108,6 @@ async def upload_file(message: Message, file_path: str):
     except Exception as e:
         await safe_edit_message(message, f"Error during upload: {str(e)}")
 
-
 # Upload progress callback
 async def upload_progress(current: int, total: int, message: Message):
     try:
@@ -115,7 +115,6 @@ async def upload_progress(current: int, total: int, message: Message):
         await safe_edit_message(message, f"Uploading... {progress:.2f}%")
     except Exception as e:
         logging.error(f"Error updating upload progress: {str(e)}")
-
 
 # Command handler to download and upload a file
 @app.on_message(filters.command("filelink"))
@@ -132,21 +131,21 @@ async def handle_filelink(client: Client, message: Message):
         # Download file with aria2p
         downloaded_file = await download_with_aria2p(link, progress_message)
 
-        # Notify user download is complete
-        await safe_edit_message(progress_message, "Download complete. Uploading...")
+        if downloaded_file:  # Proceed only if download was successful
+            # Notify user download is complete
+            await safe_edit_message(progress_message, "Download complete. Uploading...")
 
-        # Upload file
-        await upload_file(progress_message, downloaded_file)
+            # Upload file
+            await upload_file(progress_message, downloaded_file)
 
-        # Notify user of success
-        await safe_edit_message(progress_message, "File uploaded successfully!")
+            # Notify user of success
+            await safe_edit_message(progress_message, "File uploaded successfully!")
 
-        # Clean up downloaded file
-        os.remove(downloaded_file)
+            # Clean up downloaded file
+            os.remove(downloaded_file)
 
     except Exception as e:
         await safe_edit_message(progress_message, f"An error occurred: {str(e)}")
-
 
 # Command handler for /start
 @app.on_message(filters.command("start"))
@@ -155,7 +154,6 @@ async def start(client: Client, message: Message):
         "Hello! Use /filelink <url> to download and upload a file to Telegram. "
         "Supports both direct links and torrent links."
     )
-
 
 # Command handler to show active, waiting, and failed downloads
 @app.on_message(filters.command("status"))
