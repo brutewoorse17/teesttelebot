@@ -6,27 +6,27 @@ import requests
 import os
 import asyncio
 import math
-import time
 import hashlib
 
-# ... (API ID, API Hash, Bot Token, aria2 config, etc. - same as before)
-
-# ... (aria2 RPC client setup - same as before)
-
-# Global dictionary to store download statuses
-download_statuses = {}
-
-# Global dictionary to store upload statuses
-upload_statuses = {}
-
-# Global list to store gids
-gids = []
-
-
+# Bot and Aria2 Configuration
 API_ID = 29001415
 API_HASH = "92152fd62ffbff12f057edc057f978f1"
 BOT_TOKEN = "7505846620:AAFvv-sFybGfFILS-dRC8l7ph_0rqIhDgRM"
-# Create Pyrogram client
+
+ARIA2_RPC_SECRET = "your_aria2_secret"
+ARIA2_RPC_URL = "http://localhost:6800/rpc"
+DOWNLOAD_DIR = "./downloads"
+
+DEEP_AI_API_KEY = "your_deepai_api_key"  # Get your API key from https://deepai.org/
+
+# Aria2 RPC Client
+try:
+    aria2 = xmlrpc.client.ServerProxy(ARIA2_RPC_URL)
+except Exception as e:
+    print(f"Error connecting to Aria2 RPC: {e}")
+    exit()
+
+# Pyrogram Client
 app = Client(
     "my_bot",
     api_id=API_ID,
@@ -34,65 +34,113 @@ app = Client(
     bot_token=BOT_TOKEN
 )
 
-# ... (Other functions: update_download_status, periodic_status_update - same as before)
+# Global variables
+CHUNK_SIZE = 1024 * 1024 * 1999  # Chunk size: ~2GB
+download_statuses = {}
+upload_statuses = {}
+gids = []
 
-# Chunk size (slightly less than 2GB to be safe)
-CHUNK_SIZE = 1024 * 1024 * 1999  # 1999 MB in bytes
+# ---------------- Pornography Detection ------------------
 
-async def generate_gid():
-    """Generates a unique GID for each upload."""
-    timestamp = str(time.time()).encode('utf-8')
-    hash_object = hashlib.sha256(timestamp)
-    gid = hash_object.hexdigest()[:16]  # Use first 16 characters of the hash
-    return gid
-
-async def upload_progress_callback(current, total, chat_id, message_id, start_time, gid, file_path):
-    """Callback function to track and display upload progress."""
-    global upload_statuses
-
-    # Update upload status every 1 seconds
-    elapsed_time = time.time() - start_time
-    if elapsed_time < 1:
-        return
-
-    if current == total:
-        progress_message = "Upload complete!"
-        # Remove the GID from the statuses
-        if gid in upload_statuses:
-            del upload_statuses[gid]
-    else:
-        progress = (current / total) * 100
-        speed = current / elapsed_time if elapsed_time > 0 else 0
-
-        upload_statuses[gid] = {
-            "file_path": file_path,
-            "current": current,
-            "total": total,
-            "progress": progress,
-            "speed": speed,
-            "chat_id": chat_id,
-            "message_id": message_id
-        }
-        progress_message = f"Uploading: {progress:.2f}% - {speed / (1024 * 1024):.2f} MB/s"
-        
-
+async def detect_pornography(url_or_file_path):
+    """
+    Detects if a URL or file contains pornography using DeepAI's API.
+    """
     try:
-        await app.edit_message_text(
-            chat_id=chat_id,
-            message_id=message_id,
-            text=progress_message
-        )
-    except FloodWait as e:
-        await asyncio.sleep(e.value)
+        endpoint = "https://api.deepai.org/api/nsfw-detector"
+        headers = {"api-key": DEEP_AI_API_KEY}
 
-async def split_and_upload(chat_id: int, file_path: str, client: Client):
-    """Splits a large file into chunks and uploads them to Telegram."""
-    global gids
+        # Check if it's a URL
+        if url_or_file_path.startswith("http://") or url_or_file_path.startswith("https://"):
+            data = {"image": url_or_file_path}
+            response = requests.post(endpoint, headers=headers, data=data)
+        else:
+            # Assume it's a local file
+            with open(url_or_file_path, "rb") as file:
+                files = {"image": file}
+                response = requests.post(endpoint, headers=headers, files=files)
+
+        response.raise_for_status()  # Raise HTTPError for bad responses
+        result = response.json()
+        if result.get("output") and result["output"].get("nsfw_score") > 0.5:
+            return True  # Contains adult content
+        return False  # Safe content
+    except requests.exceptions.RequestException as e:
+        print(f"Error detecting pornography: {e}")
+        return False
+    except Exception as e:
+        print(f"Unexpected error during pornography detection: {e}")
+        return False
+
+# ---------------- Commands and Functions -----------------
+
+@app.on_message(filters.command("add"))
+async def add_download(client: Client, message: Message):
+    """Handles adding a new download via URL."""
+    if len(message.command) > 1:
+        url = message.command[1]
+        try:
+            # Detect pornography in the URL
+            await message.reply_text("Checking the URL for adult content...")
+            is_porn = await detect_pornography(url)
+            if is_porn:
+                await message.reply_text("The URL contains adult content and has been blocked.")
+                return
+
+            # Add the download to Aria2
+            options = {"dir": os.path.abspath(DOWNLOAD_DIR)}
+            gid = aria2.aria2.addUri(ARIA2_RPC_SECRET, [url], options)
+            if gid:
+                gids.append(gid)
+                await message.reply_text(f"Download added. GID: `{gid}`")
+                asyncio.create_task(wait_for_download_and_upload(gid, message.chat.id))
+            else:
+                await message.reply_text("Failed to add the download to Aria2.")
+        except xmlrpc.client.Fault as e:
+            await message.reply_text(f"Aria2 error: {e}")
+        except Exception as e:
+            await message.reply_text(f"Failed to add download: {e}")
+    else:
+        await message.reply_text("Please provide a URL. Usage: `/add <url>`")
+
+
+async def wait_for_download_and_upload(gid: str, chat_id: int):
+    """Waits for an aria2 download to complete and uploads the file."""
+    while True:
+        try:
+            status = aria2.aria2.tellStatus(ARIA2_RPC_SECRET, gid)
+            if status["status"] == "complete":
+                file_path = status["files"][0]["path"]
+
+                # Detect pornography in the file
+                await app.send_message(chat_id, "Scanning the file for adult content...")
+                is_porn = await detect_pornography(file_path)
+                if is_porn:
+                    await app.send_message(chat_id, "The file contains adult content and has been blocked.")
+                    os.remove(file_path)
+                    break
+
+                # Upload the file to Telegram
+                await app.send_message(chat_id, "Download complete. Uploading...")
+                await upload_to_telegram(chat_id, file_path)
+                os.remove(file_path)
+                break
+            elif status["status"] in ["error", "removed"]:
+                error_message = status.get("errorMessage", "Unknown error")
+                await app.send_message(chat_id, f"Download failed: {error_message}")
+                break
+        except Exception as e:
+            print(f"Error monitoring download for GID {gid}: {e}")
+        await asyncio.sleep(5)
+
+
+async def upload_to_telegram(chat_id: int, file_path: str):
+    """Uploads a file to Telegram, splitting it if necessary."""
     file_size = os.path.getsize(file_path)
     num_chunks = math.ceil(file_size / CHUNK_SIZE)
 
     if num_chunks > 1:
-        await client.send_message(
+        await app.send_message(
             chat_id,
             text="File is larger than 2GB. Splitting into multiple parts to upload."
         )
@@ -103,266 +151,34 @@ async def split_and_upload(chat_id: int, file_path: str, client: Client):
             with open(chunk_path, "wb") as chunk_file:
                 chunk_file.write(f.read(CHUNK_SIZE))
 
-            gid = await generate_gid()
-            gids.append(gid)
-            part_message = await client.send_message(chat_id, text=f"Uploading part {i + 1} of {num_chunks}...\nGID: `{gid}`", parse_mode="markdown")
-            start_time = time.time()
-            # Pass the progress callback, chat_id, message.id, gid and file path to send_document
-            await client.send_document(
-                chat_id=chat_id,
-                document=chunk_path,
-                progress=upload_progress_callback,
-                progress_args=(chat_id, part_message.id, start_time, gid, chunk_path)
-            )
-
-            # Update the upload status with file path
-            upload_statuses[gid] = {
-                "file_path": chunk_path,  # Add file path here
-                "current": 0,  # Initial value, will be updated by the callback
-                "total": os.path.getsize(chunk_path),  # Size of this chunk
-                "progress": 0.0,  # Initial value
-                "speed": 0.0,  # Initial value
-                "chat_id": chat_id,
-                "message_id": part_message.id
-            }
-
+            await app.send_document(chat_id, document=chunk_path)
             os.remove(chunk_path)  # Clean up the chunk
 
-    await client.send_message(
-        chat_id,
-        text=f"File uploaded in {num_chunks} parts. You need to rejoin them after downloading."
-    )
+    if num_chunks == 1:
+        await app.send_document(chat_id, document=file_path)
 
-async def upload_to_telegram(chat_id: int, file_path: str, client: Client):
-    """Uploads a file to Telegram, splitting it if necessary."""
-    global gids
-    if os.path.getsize(file_path) > CHUNK_SIZE:
-        await split_and_upload(chat_id, file_path, client)
-    else:
-        try:
-            gid = await generate_gid()
-            gids.append(gid)
-            start_time = time.time()
-            # Send an initial message to the chat
-            message = await client.send_message(chat_id, text=f"Starting upload...\nGID: `{gid}`", parse_mode="markdown")
-
-            # Pass the progress callback, chat_id, message.id, gid and file path to send_document
-            await client.send_document(
-                chat_id=chat_id,
-                document=file_path,
-                progress=upload_progress_callback,
-                progress_args=(chat_id, message.id, start_time, gid, file_path)
-            )
-            # Update the upload status with file path
-            upload_statuses[gid] = {
-                "file_path": file_path,  # Add file path here
-                "current": 0,  # Initial value, will be updated by the callback
-                "total": os.path.getsize(file_path),  # Total size of the file
-                "progress": 0.0,  # Initial value
-                "speed": 0.0,  # Initial value
-                "chat_id": chat_id,
-                "message_id": message.id
-            }
-
-        except Exception as e:
-            await client.send_message(chat_id=chat_id, text=f"Error uploading file: {e}")
-
-async def handle_torrent(client: Client, message: Message):
-    """Handles .torrent files, adds them to aria2."""
-    global gids
-    document = message.document
-    chat_id = message.chat.id
-
-    if document.mime_type == 'application/x-bittorrent':
-        try:
-            file = await document.get_file()
-            file_path = os.path.join(TORRENT_DIR, document.file_name)
-            await file.download_to_drive(file_path)
-
-            # Add torrent to aria2
-            with open(file_path, "rb") as torrent_file:
-                torrent_data = xmlrpc.client.Binary(torrent_file.read())
-            gid = aria2.aria2.addTorrent(ARIA2_RPC_TOKEN, torrent_data, [], {"dir": TORRENT_DIR})
-            await message.reply_text(f"Torrent added to aria2. GID: {gid}")
-
-            # Add the gid to the global list
-            gids.append(gid)
-
-            # Update the status immediately after adding
-            await update_download_status(gid)
-
-            # Wait for the download to complete and then upload
-            asyncio.create_task(wait_for_download_and_upload(gid, message.chat.id, file_path, client))
-
-            # Clean up the temporary .torrent file
-            os.remove(file_path)
-
-        except Exception as e:
-            await message.reply_text(f"Error processing torrent: {e}")
-    else:
-        await message.reply_text("Please send a valid .torrent file.")
-
-async def wait_for_download_and_upload(gid: str, chat_id: int, file_path: str, client: Client):
-    """Waits for an aria2 download to complete and then uploads the file to Telegram."""
-    global gids
-    while True:
-        if gid in download_statuses:
-            status = download_statuses[gid]
-            download_status = status['status']
-
-            if download_status == 'active':
-                # Calculate and display progress (optional)
-                completed_length = int(status['completedLength'])
-                total_length = int(status['totalLength'])
-                progress = (completed_length / total_length) * 100 if total_length > 0 else 0
-                download_speed = int(status['downloadSpeed'])
-                upload_speed = int(status['uploadSpeed'])
-                print(f"GID: {gid} | Progress: {progress:.2f}% | Download Speed: {download_speed / (1024):.2f} KB/s | Upload Speed: {upload_speed / (1024):.2f} KB/s")
-
-            elif download_status == 'complete':
-                # Download finished, get the downloaded file path
-                downloaded_file_path = status['files'][0]['path']
-
-                # Notify user that download is finished
-                await client.send_message(chat_id, f"Download finished for GID: {gid}. Starting upload...")
-
-                # Upload the file to Telegram
-                await upload_to_telegram(chat_id, downloaded_file_path, client)
-
-                # Notify user that upload is finished
-                await client.send_message(chat_id, f"Upload completed for file: {downloaded_file_path}")
-
-                # Clean up the downloaded file (optional)
-                os.remove(downloaded_file_path)
-
-                # Remove the GID from the statuses and gids list
-                if gid in download_statuses:
-                    del download_statuses[gid]
-                if gid in gids:
-                    gids.remove(gid)
-                break
-
-            elif download_status in ['error', 'paused', 'removed']:
-                await client.send_message(chat_id, f"Download failed or stopped with status: {download_status}")
-                # Remove the GID from the statuses and gids list
-                if gid in download_statuses:
-                    del download_statuses[gid]
-                if gid in gids:
-                    gids.remove(gid)
-                break
-
-        await asyncio.sleep(5)  # Check every 5 seconds
-
-async def cancel_download(gid: str, chat_id: int, client: Client):
-    """Cancels a download using aria2."""
-    global gids
-
-    try:
-        # Remove the download from aria2
-        removed_gids = aria2.aria2.remove(ARIA2_RPC_TOKEN, gid)
-
-        if removed_gids and removed_gids[0] == gid:
-            # Remove the GID from the statuses and gids list
-            if gid in download_statuses:
-                del download_statuses[gid]
-            if gid in gids:
-                gids.remove(gid)
-
-            await client.send_message(chat_id, f"Download cancelled for GID: {gid}")
-        else:
-            await client.send_message(chat_id, f"Failed to cancel download for GID: {gid}. It may not exist.")
-    except Exception as e:
-        await client.send_message(chat_id, f"Error cancelling download for GID: {gid}: {e}")
-
-async def cancel_upload(gid: str, client: Client):
-    """Cancels an upload to Telegram."""
-    global upload_statuses
-
-    if gid in upload_statuses:
-        status = upload_statuses[gid]
-        chat_id = status["chat_id"]
-        message_id = status["message_id"]
-
-        try:
-            # Delete the message being edited
-            await client.delete_messages(chat_id, message_id)
-            await client.send_message(chat_id, f"Upload canceled for GID: {gid}")
-
-        except Exception as e:
-            await client.send_message(chat_id, f"Error canceling upload for GID {gid}: {e}")
-        finally:
-            # Remove the GID from the statuses
-            if gid in upload_statuses:
-                del upload_statuses[gid]
-            if gid in gids:
-                gids.remove(gid)
-    else:
-        await client.send_message(status["chat_id"], f"No active upload found for GID: {gid}")
-
-@app.on_message(filters.command("cancel"))
-async def cancel_command(client: Client, message: Message):
-    """Handles the /cancel command to cancel a download by GID or an upload by GID."""
-    global gids, upload_statuses
-    chat_id = message.chat.id
-
-    if len(message.command) > 1:
-        identifier = message.command[1]
-
-        if identifier in gids:
-            # Check if it's an active download or upload based on available dictionaries
-            if identifier in download_statuses:
-                await cancel_download(identifier, chat_id, client)
-            elif identifier in upload_statuses:
-                await cancel_upload(identifier, client)
-            else:
-                await message.reply_text("The provided GID is in the list but not found in active downloads or uploads.")
-        else:
-            await message.reply_text("Invalid GID or operation already completed.")
-    else:
-        await message.reply_text("Please provide a GID to cancel. Usage: /cancel <GID>")
 
 @app.on_message(filters.command("stats"))
 async def get_stats(client: Client, message: Message):
-    """Gets and sends download and upload stats."""
-    chat_id = message.chat.id
-
+    """Gets and sends aria2 download stats."""
     try:
-        # Get global stats from aria2
-        global_stats = aria2.aria2.getGlobalStat(ARIA2_RPC_TOKEN)
-
-        message_text = "**aria2 Download Stats:**\n"
-        message_text += f"**Download Speed:** {int(global_stats['downloadSpeed']) / (1024):.2f} KB/s\n"
-        message_text += f"**Upload Speed:** {int(global_stats['uploadSpeed']) / (1024):.2f} KB/s\n"
-        message_text += f"**Active Downloads:** {global_stats['numActive']}\n"
-        message_text += f"**Waiting Downloads:** {global_stats['numWaiting']}\n"
-        message_text += f"**Stopped Downloads:** {global_stats['numStopped']}\n\n"
-
-        # Add details for each active download
-        for gid in gids:
-            if gid in download_statuses:
-                status = download_statuses[gid]
-                message_text += f"**GID:** `{gid}`\n"
-                message_text += f"**Status:** {status['status']}\n"
-                message_text += f"**Progress:** {int(status['completedLength']) / int(status['totalLength']) * 100 if int(status['totalLength']) > 0 else 0:.2f}%\n"
-                message_text += f"**Downloaded:** {int(status['completedLength']) / (1024 * 1024):.2f} MB / {int(status['totalLength']) / (1024 * 1024):.2f} MB\n"
-                message_text += f"**File:** {status['files'][0]['path']}\n\n"
-
-        # Add details for each active uploads
-        message_text += "**Active Uploads:**\n"
-        for gid in gids:
-            if gid in upload_statuses:
-                status = upload_statuses[gid]
-                message_text += f"**GID:** `{gid}`\n"
-                message_text += f"**File:** {status['file_path']}\n"
-                message_text += f"**Progress:** {status['progress']:.2f}%\n"
-                message_text += f"**Uploaded:** {status['current'] / (1024 * 1024):.2f} MB / {status['total'] / (1024 * 1024):.2f} MB\n"
-                message_text += f"**Speed:** {status['speed'] / (1024 * 1024):.2f} MB/s\n\n"
-
+        global_stats = aria2.aria2.getGlobalStat(ARIA2_RPC_SECRET)
+        message_text = f"**Download Stats:**\n" \
+                       f"Download Speed: {int(global_stats['downloadSpeed']) / 1024:.2f} KB/s\n" \
+                       f"Upload Speed: {int(global_stats['uploadSpeed']) / 1024:.2f} KB/s\n" \
+                       f"Active Downloads: {global_stats['numActive']}\n" \
+                       f"Waiting Downloads: {global_stats['numWaiting']}\n" \
+                       f"Stopped Downloads: {global_stats['numStopped']}"
         await message.reply_text(message_text, parse_mode="markdown")
-
     except Exception as e:
         await message.reply_text(f"Error fetching stats: {e}")
 
-# Start the client and periodic update task
+# ---------------- Start the Bot -----------------
 async def main():
-  async with app:
+    async with app:
+        print("Bot is running...")
+        await app.start()
+        await idle()
+
+if __name__ == "__main__":
+    asyncio.run(main())
