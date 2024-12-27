@@ -1,9 +1,9 @@
 import os
 import logging
-import requests
+import aiohttp
 import asyncio
-from tqdm import tqdm
 from pyrogram import Client, filters
+from pyrogram.types import Message
 from pyrogram.errors import FloodWait
 
 # Enable logging
@@ -20,91 +20,99 @@ TEMP_DOWNLOAD_PATH = './downloads'
 # Create a Pyrogram client
 app = Client("my_bot", api_id=api_id, api_hash=api_hash, bot_token=bot_token)
 
-# Progress bar for downloading files
-def download_file(url, file_path, progress_callback=None, message=None):
-    # Make an HTTP GET request with stream=True to download the file
-    response = requests.get(url, stream=True)
-    file_size = int(response.headers.get('content-length', 0))
 
-    with tqdm(total=file_size, unit='B', unit_scale=True, desc="Downloading") as pbar:
-        with open(file_path, 'wb') as f:
-            for chunk in response.iter_content(chunk_size=1024):
-                if chunk:
-                    f.write(chunk)
-                    pbar.update(len(chunk))  # Update the progress bar with the chunk's length
-                    # Call progress callback to update the message
-                    if progress_callback:
-                        progress_callback(pbar.n, file_size, message)
-
-# Progress bar for uploading files to Telegram
-async def upload_file_to_telegram(message, file_path, progress_callback=None):
+# Async file downloader with progress updates
+async def download_file(url: str, file_path: str, message: Message):
     try:
-        # Upload the document and show progress
-        await message.reply_document(
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url) as response:
+                file_size = int(response.headers.get("content-length", 0))
+                downloaded_size = 0
+
+                # Ensure the file directory exists
+                os.makedirs(os.path.dirname(file_path), exist_ok=True)
+
+                with open(file_path, "wb") as file:
+                    async for chunk in response.content.iter_chunked(1024):
+                        if chunk:
+                            file.write(chunk)
+                            downloaded_size += len(chunk)
+
+                            # Update download progress
+                            progress = (downloaded_size / file_size) * 100
+                            await message.edit_text(f"Downloading... {progress:.2f}%")
+
+        return file_path
+
+    except Exception as e:
+        await message.edit_text(f"Error during download: {str(e)}")
+        raise
+
+
+# Upload file to Telegram with progress updates
+async def upload_file(message: Message, file_path: str):
+    try:
+        await app.send_document(
+            chat_id=message.chat.id,
             document=file_path,
             progress=upload_progress,
-            progress_args=("Uploading...", message, progress_callback)  # Custom progress message
+            progress_args=(message,),
         )
     except FloodWait as e:
-        # In case of a flood wait, wait before retrying
-        await message.reply(f"Rate limit exceeded. Please wait {e.x} seconds.")
         await asyncio.sleep(e.x)
+        await message.edit_text(f"Rate limit exceeded. Retrying in {e.x} seconds.")
+    except Exception as e:
+        await message.edit_text(f"Error during upload: {str(e)}")
+
 
 # Upload progress callback
-def upload_progress(current, total, message, prefix="Uploading...", progress_callback=None):
-    # Calculate the percentage of the file uploaded
-    progress = current / total * 100
-    # Update the message with the progress
-    progress_callback(message, download_progress=100, upload_progress=progress)
+async def upload_progress(current: int, total: int, message: Message):
+    try:
+        progress = (current / total) * 100
+        await message.edit_text(f"Uploading... {progress:.2f}%")
+    except Exception as e:
+        logging.error(f"Error updating upload progress: {str(e)}")
 
-# Update progress message that combines download and upload progress
-def update_progress_message(message, download_progress, upload_progress):
-    message.edit(f"Download Progress: {download_progress:.2f}%\nUpload Progress: {upload_progress:.2f}%")
 
-# Command handler to download file from a link and upload to Telegram
-@app.on_message(filters.command('filelink'))
-async def download_and_upload_file(client, message):
+# Command handler to download and upload a file
+@app.on_message(filters.command("filelink"))
+async def handle_filelink(client: Client, message: Message):
     if len(message.command) < 2:
         await message.reply("Please provide a valid URL. Example: /filelink <url>")
         return
 
-    file_url = message.command[1]  # Get the URL from the message
+    file_url = message.command[1]
+    filename = file_url.split("/")[-1]
+    file_path = os.path.join(TEMP_DOWNLOAD_PATH, filename)
 
-    # Ensure the downloads directory exists
-    if not os.path.exists(TEMP_DOWNLOAD_PATH):
-        os.makedirs(TEMP_DOWNLOAD_PATH)
+    progress_message = await message.reply("Starting download...")
 
     try:
-        # Send a message that the bot is downloading the file
-        progress_msg = await message.reply("Downloading and uploading...")
+        # Download file
+        await download_file(file_url, file_path, progress_message)
 
-        # Get the file name from the URL
-        filename = file_url.split("/")[-1]
-        file_path = os.path.join(TEMP_DOWNLOAD_PATH, filename)
+        # Notify user download is complete
+        await progress_message.edit_text("Download complete. Uploading...")
 
-        # Start downloading the file with progress updates
-        download_file(file_url, file_path, progress_callback=update_progress_message, message=progress_msg)
+        # Upload file
+        await upload_file(progress_message, file_path)
 
-        # Notify the user that the file has been downloaded
-        await progress_msg.edit("Download complete! Now uploading...")
-
-        # Start uploading the file with progress updates
-        await upload_file_to_telegram(progress_msg, file_path, progress_callback=update_progress_message)
-
-        # Optionally, delete the file after uploading to Telegram
+        # Clean up downloaded file
         os.remove(file_path)
 
-        # Notify the user that the file is uploaded
-        await progress_msg.edit(f"File uploaded successfully: {filename}")
+        # Notify user of success
+        await progress_message.edit_text("File uploaded successfully!")
 
     except Exception as e:
-        await message.reply(f"An error occurred: {str(e)}")
+        await progress_message.edit_text(f"An error occurred: {str(e)}")
+
 
 # Command handler for /start
-@app.on_message(filters.command('start'))
-async def start(client, message):
+@app.on_message(filters.command("start"))
+async def start(client: Client, message: Message):
     await message.reply("Hello! Use /filelink <url> to download and upload a file to Telegram.")
 
+
 # Run the bot
-if __name__ == '__main__':
+if __name__ == "__main__":
     app.run()
