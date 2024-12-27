@@ -5,6 +5,10 @@ import subprocess
 from pyrogram import Client, filters
 from pyrogram.types import Message
 from aria2p import API, Client as Aria2Client, Download
+from requests.adapters import HTTPAdapter
+from requests.packages.urllib3.util.retry import Retry
+from requests import Session
+import re
 
 # Enable logging
 logging.basicConfig(level=logging.INFO)
@@ -117,6 +121,70 @@ async def upload_progress(current: int, total: int, message: Message):
         logging.error(f"Error updating upload progress: {str(e)}")
 
 
+# Mediafire folder handling function
+def mediafireFolder(url):
+    if "::" in url:
+        _password = url.split("::")[-1]
+        url = url.split("::")[-2]
+    else:
+        _password = ""
+    try:
+        raw = url.split("/", 4)[-1]
+        folderkey = raw.split("/", 1)[0]
+        folderkey = folderkey.split(",")
+    except:
+        raise Exception("ERROR: Could not parse URL for folder key.")
+    
+    if len(folderkey) == 1:
+        folderkey = folderkey[0]
+    
+    details = {"contents": [], "title": "", "total_size": 0, "header": ""}
+    
+    session = Session()
+    adapter = HTTPAdapter(
+        max_retries=Retry(total=10, read=10, connect=10, backoff_factor=0.3)
+    )
+    session.mount("http://", adapter)
+    session.mount("https://", adapter)
+
+    folder_infos = []
+
+    def __get_info(folderkey):
+        try:
+            if isinstance(folderkey, list):
+                folderkey = ",".join(folderkey)
+            _json = session.post(
+                "https://www.mediafire.com/api/1.5/folder/get_info.php",
+                data={
+                    "recursive": "yes",
+                    "folder_key": folderkey,
+                    "response_format": "json",
+                },
+            ).json()
+        except Exception as e:
+            raise Exception(f"ERROR: {e.__class__.__name__} While getting folder info")
+        
+        _res = _json["response"]
+        if "folder_infos" in _res:
+            folder_infos.extend(_res["folder_infos"])
+        elif "folder_info" in _res:
+            folder_infos.append(_res["folder_info"])
+        elif "message" in _res:
+            raise Exception(f"ERROR: {_res['message']}")
+        else:
+            raise Exception("ERROR: something went wrong!")
+    
+    __get_info(folderkey)
+
+    return folder_infos
+
+
+# Function to check if URL is a valid direct MediaFire link
+def is_mediafire_direct_link(url):
+    mediafire_pattern = r"^https://www\.mediafire\.com/file/[\w-]+$"
+    return bool(re.match(mediafire_pattern, url))
+
+
 # Command handler to download and upload a file
 @app.on_message(filters.command("filelink"))
 async def handle_filelink(client: Client, message: Message):
@@ -125,6 +193,39 @@ async def handle_filelink(client: Client, message: Message):
         return
 
     link = message.command[1]
+
+    # Check if it's a Mediafire folder link
+    if "mediafire.com" in link:
+        if is_mediafire_direct_link(link):  # It's a direct file link
+            progress_message = await message.reply("Preparing to download MediaFire direct file...")
+
+            try:
+                # Download file directly from MediaFire
+                downloaded_file = await download_with_aria2p(link, progress_message)
+
+                # Notify user download is complete
+                await safe_edit_message(progress_message, "Download complete. Uploading...")
+
+                # Upload file
+                await upload_file(progress_message, downloaded_file)
+
+                # Notify user of success
+                await safe_edit_message(progress_message, "File uploaded successfully!")
+
+                # Clean up downloaded file
+                os.remove(downloaded_file)
+
+            except Exception as e:
+                await safe_edit_message(progress_message, f"An error occurred: {str(e)}")
+
+        else:  # It's a folder link
+            try:
+                folder_info = mediafireFolder(link)
+                folder_info_message = "\n".join([f"File: {file['file_name']} (Size: {file['size']})" for file in folder_info])
+                await message.reply(f"Found {len(folder_info)} items in the Mediafire folder:\n{folder_info_message}")
+            except Exception as e:
+                await message.reply(f"Error fetching Mediafire folder info: {str(e)}")
+        return
 
     progress_message = await message.reply("Preparing to download...")
 
@@ -153,49 +254,8 @@ async def handle_filelink(client: Client, message: Message):
 async def start(client: Client, message: Message):
     await message.reply(
         "Hello! Use /filelink <url> to download and upload a file to Telegram. "
-        "Supports both direct links and torrent links."
+        "Supports both direct links and torrent links, including Mediafire folders and files."
     )
-
-
-# Command handler to show active, waiting, and failed downloads
-@app.on_message(filters.command("status"))
-async def show_download_status(client: Client, message: Message):
-    try:
-        all_downloads = aria2.get_downloads()  # Get all downloads
-        active_downloads = [d for d in all_downloads if d.status == "active"]
-        waiting_downloads = [d for d in all_downloads if d.status == "waiting"]
-        failed_downloads = [d for d in all_downloads if d.status == "failed"]
-
-        status_message = "Download Status:\n\n"
-
-        if active_downloads:
-            status_message += "Active Downloads:\n"
-            for download in active_downloads:
-                progress = (
-                    (download.completed_length / download.total_length) * 100
-                    if download.total_length > 0
-                    else 0
-                )
-                status_message += f"- {download.name} (GID: {download.gid}): {progress:.2f}% complete\n"
-
-        if waiting_downloads:
-            status_message += "\nWaiting Downloads:\n"
-            for download in waiting_downloads:
-                status_message += f"- {download.name} (GID: {download.gid}): Waiting\n"
-
-        if failed_downloads:
-            status_message += "\nFailed Downloads:\n"
-            for download in failed_downloads:
-                status_message += f"- {download.name} (GID: {download.gid}): Failed\n"
-
-        if not (active_downloads or waiting_downloads or failed_downloads):
-            status_message += "No downloads in progress.\n"
-
-        # Send a new message instead of editing an old one
-        await message.reply(status_message)
-
-    except Exception as e:
-        await message.reply(f"An error occurred while retrieving download status: {str(e)}")
 
 
 # Run the bot
