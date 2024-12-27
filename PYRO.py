@@ -9,9 +9,10 @@ ARIA2_RPC_SECRET = "your_aria2_secret"
 ARIA2_RPC_URL = "http://localhost:6800/rpc"
 
 # Telegram Bot settings
-API_ID = 1234567
-API_HASH = "your_api_hash"
-BOT_TOKEN = "your_bot_token"
+API_ID = 29001415
+API_HASH = "92152fd62ffbff12f057edc057f978f1"
+BOT_TOKEN = "7505846620:AAFvv-sFybGfFILS-dRC8l7ph_0rqIhDgRM"
+
 
 # Initialize Pyrogram Client
 app = Client(
