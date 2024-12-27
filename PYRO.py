@@ -35,9 +35,10 @@ last_message_content = {}
 async def safe_edit_message(message: Message, new_text: str):
     global last_message_content
     try:
-        if last_message_content.get(message.message_id) != new_text:
+        # Use message.id instead of message.message_id
+        if last_message_content.get(message.id) != new_text:
             await message.edit_text(new_text)  # Edit only if the content is different
-            last_message_content[message.message_id] = new_text  # Update the last message content
+            last_message_content[message.id] = new_text  # Update the last message content
     except Exception as e:
         logging.error(f"Error editing message: {str(e)}")
 
