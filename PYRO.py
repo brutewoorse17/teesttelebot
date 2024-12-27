@@ -1,7 +1,6 @@
 import os
 import asyncio
 import logging
-import re  # Import the regex library
 import subprocess
 from pyrogram import Client, filters
 from pyrogram.types import Message
@@ -54,13 +53,6 @@ def start_aria2c_daemon():
     except Exception as e:
         logging.error(f"Failed to start aria2c daemon: {str(e)}")
         raise
-
-
-# Regex to check if the link is a valid direct download URL
-def is_valid_direct_link(link: str) -> bool:
-    # Regex pattern for direct download links (e.g., ending in .zip, .tar.gz, .rar, etc.)
-    pattern = r'^(https?://(?:[a-zA-Z]|[0-9]|[$-_@.&+]|[!*\\(\\),]|(?:%[0-9a-fA-F][0-9a-fA-F]))+(\.zip|\.tar\.gz|\.rar|\.mp4|\.mp3|\.pdf|\.exe))$'
-    return bool(re.match(pattern, link))
 
 
 # Safe function to edit message to avoid Telegram errors
@@ -134,11 +126,6 @@ async def handle_filelink(client: Client, message: Message):
 
     link = message.command[1]
 
-    # Check if the link is a valid direct download URL
-    if not is_valid_direct_link(link):
-        await message.reply("The provided link is not a valid direct download URL. Please ensure it ends with a valid file extension (e.g., .zip, .tar.gz, .mp4).")
-        return
-
     progress_message = await message.reply("Preparing to download...")
 
     try:
@@ -168,6 +155,47 @@ async def start(client: Client, message: Message):
         "Hello! Use /filelink <url> to download and upload a file to Telegram. "
         "Supports both direct links and torrent links."
     )
+
+
+# Command handler to show active, waiting, and failed downloads
+@app.on_message(filters.command("status"))
+async def show_download_status(client: Client, message: Message):
+    try:
+        all_downloads = aria2.get_downloads()  # Get all downloads
+        active_downloads = [d for d in all_downloads if d.status == "active"]
+        waiting_downloads = [d for d in all_downloads if d.status == "waiting"]
+        failed_downloads = [d for d in all_downloads if d.status == "failed"]
+
+        status_message = "Download Status:\n\n"
+
+        if active_downloads:
+            status_message += "Active Downloads:\n"
+            for download in active_downloads:
+                progress = (
+                    (download.completed_length / download.total_length) * 100
+                    if download.total_length > 0
+                    else 0
+                )
+                status_message += f"- {download.name}: {progress:.2f}% complete\n"
+
+        if waiting_downloads:
+            status_message += "\nWaiting Downloads:\n"
+            for download in waiting_downloads:
+                status_message += f"- {download.name}: Waiting\n"
+
+        if failed_downloads:
+            status_message += "\nFailed Downloads:\n"
+            for download in failed_downloads:
+                status_message += f"- {download.name}: Failed\n"
+
+        if not (active_downloads or waiting_downloads or failed_downloads):
+            status_message += "No downloads in progress.\n"
+
+        # Send a new message instead of editing an old one
+        await message.reply(status_message)
+
+    except Exception as e:
+        await message.reply(f"An error occurred while retrieving download status: {str(e)}")
 
 
 # Run the bot
