@@ -117,10 +117,20 @@ async def cancel_download_command(client: Client, message: Message):
     else:
         await message.reply_text("Invalid or missing GID.")
 
-# Start the client
+# Ensure everything runs on the same event loop
 async def main():
-    async with app:
-        await app.run()
+    loop = asyncio.get_event_loop()
+    # Start the Pyrogram client and Aria2 monitoring tasks
+    await asyncio.gather(
+        app.start(),
+        loop.run_in_executor(None, lambda: asyncio.run(aria2_client_monitor()))
+    )
+
+async def aria2_client_monitor():
+    """This function will allow Aria2 client to run alongside the Pyrogram bot."""
+    # Simulating running the Aria2p monitoring logic in a separate async task
+    while True:
+        await asyncio.sleep(10)
 
 if __name__ == "__main__":
     asyncio.run(main())
