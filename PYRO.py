@@ -1,127 +1,162 @@
-import asyncio
-import aria2p
 import os
+import asyncio
+import logging
+import subprocess
 from pyrogram import Client, filters
 from pyrogram.types import Message
+from aria2p import API, Client as Aria2Client, Download
 
-# Set up the Aria2 connection (without RPC secret)
-aria2 = aria2p.API(
-    aria2p.Client(
-        host="http://127.0.0.1",  # Aria2 server IP
-        port=6800  # Aria2 RPC server port
-    )
+# Enable logging
+logging.basicConfig(level=logging.INFO)
+
+# Your bot's credentials
+api_id = '29001415'  # Replace with your API ID
+api_hash = '92152fd62ffbff12f057edc057f978f1'  # Replace with your API Hash
+bot_token = '7505846620:AAFvv-sFybGfFILS-dRC8l7ph_0rqIhDgRM'  # Replace with your Bot Token
+
+# Directory to temporarily save downloaded files
+TEMP_DOWNLOAD_PATH = "./downloads"
+
+# Ensure the directory exists
+if not os.path.exists(TEMP_DOWNLOAD_PATH):
+    os.makedirs(TEMP_DOWNLOAD_PATH)
+
+# Create a Pyrogram client
+app = Client("my_bot", api_id=api_id, api_hash=api_hash, bot_token=bot_token)
+
+# Connect to aria2 RPC (no secret)
+aria2 = API(
+    Aria2Client(host="http://localhost", port=6800)
 )
 
-# Create Pyrogram client
-API_ID = 29001415
-API_HASH = "92152fd62ffbff12f057edc057f978f1"
-BOT_TOKEN = "7505846620:AAFvv-sFybGfFILS-dRC8l7ph_0rqIhDgRM"
-
-app = Client(
-    "my_bot",
-    api_id=API_ID,
-    api_hash=API_HASH,
-    bot_token=BOT_TOKEN
-)
-
-# Global dictionary to store download statuses
-download_statuses = {}
-
-async def add_download(url: str):
-    """Add a download to Aria2"""
+# Function to ensure aria2c is running
+def start_aria2c_daemon():
     try:
-        download = aria2.add(uri=url)
-        print(f"Download added with GID: {download.gid}")
-        download_statuses[download.gid] = {"status": "active", "progress": 0, "file_path": None}
-        return download.gid
-    except Exception as e:
-        print(f"Error adding download: {e}")
-        return None
+        # Check if aria2c is already running
+        result = subprocess.run(["pgrep", "-x", "aria2c"], stdout=subprocess.PIPE)
+        if result.returncode == 0:
+            logging.info("aria2c is already running.")
+            return
 
-async def monitor_download(gid: str, chat_id: int):
-    """Monitor the download progress and upload once completed"""
+        # Start aria2c with RPC enabled and without a secret
+        subprocess.Popen([
+            "aria2c",
+            "--enable-rpc",
+            "--rpc-listen-all=true",
+            "--rpc-allow-origin-all=true",
+            "--daemon"
+        ])
+        logging.info("aria2c daemon started successfully!")
+    except FileNotFoundError:
+        logging.error("aria2c is not installed. Please install aria2c and try again.")
+        raise
+    except Exception as e:
+        logging.error(f"Failed to start aria2c daemon: {str(e)}")
+        raise
+
+
+# Download using aria2p
+async def download_with_aria2p(link: str, message: Message):
     try:
-        while True:
-            status = aria2.get_download_status(gid)
-            download_statuses[gid]['progress'] = (status.completedLength / status.totalLength) * 100
-            if status.status == "complete":
-                download_statuses[gid]['file_path'] = status.files[0].filePath  # Get the file path
-                print(f"Download complete: {gid}, file saved at {status.files[0].filePath}")
-                download_statuses[gid]['status'] = "complete"
-                # Upload the file to Telegram after download completion
-                await upload_file_to_telegram(chat_id, status.files[0].filePath)
-                break
-            elif status.status == "failed":
-                print(f"Download failed: {gid}")
-                download_statuses[gid]['status'] = "failed"
-                break
-            else:
-                print(f"GID: {gid} | Progress: {download_statuses[gid]['progress']:.2f}%")
-            await asyncio.sleep(1)
-    except Exception as e:
-        print(f"Error monitoring download {gid}: {e}")
+        # Add the download to aria2 with options to ignore SSL errors
+        download: Download = aria2.add(link, options={
+            "dir": TEMP_DOWNLOAD_PATH,
+            "check-certificate": "false"  # Disable certificate validation
+        })
 
-async def upload_file_to_telegram(chat_id: int, file_path: str):
-    """Upload the file to Telegram after download completion"""
+        await message.edit_text(f"Started download: {link}")
+
+        # Monitor download progress
+        while not download.is_complete and not download.has_failed:
+            await asyncio.sleep(2)
+            download.update()
+
+            progress = (
+                (download.completed_length / download.total_length) * 100
+                if download.total_length > 0 else 0
+            )
+            await message.edit_text(f"Downloading... {progress:.2f}%")
+
+        if download.has_failed:
+            raise Exception(f"Download failed: {download.error_message}")
+
+        await message.edit_text(f"Download complete: {download.name}")
+
+        # Return the file path
+        return os.path.join(TEMP_DOWNLOAD_PATH, download.name)
+
+    except Exception as e:
+        await message.edit_text(f"Error during download: {str(e)}")
+        raise
+
+
+# Upload file to Telegram with progress updates
+async def upload_file(message: Message, file_path: str):
     try:
-        if os.path.exists(file_path):
-            print(f"Uploading {file_path} to Telegram chat {chat_id}...")
-            await app.send_document(chat_id, file_path)
-            print(f"File {file_path} uploaded successfully.")
-        else:
-            print(f"File {file_path} not found!")
-    except Exception as e:
-        print(f"Error uploading file to Telegram: {e}")
-
-@app.on_message(filters.command("add_download"))
-async def add_download_command(client: Client, message: Message):
-    """Handles adding a new download via command."""
-    url = message.text.split(" ", 1)[1] if len(message.command) > 1 else None
-    if url:
-        gid = await add_download(url)
-        if gid:
-            await message.reply_text(f"Download added with GID: {gid}")
-            # Monitor download for this GID and upload to the user chat once complete
-            asyncio.create_task(monitor_download(gid, message.chat.id))  # Run download monitoring in background
-        else:
-            await message.reply_text("Error adding the download.")
-    else:
-        await message.reply_text("Please provide a valid URL. Usage: /add_download <URL>")
-
-@app.on_message(filters.command("download_status"))
-async def download_status_command(client: Client, message: Message):
-    """Handles checking the download status via command."""
-    gid = message.text.split(" ", 1)[1] if len(message.command) > 1 else None
-    if gid and gid in download_statuses:
-        status = download_statuses[gid]
-        await message.reply_text(
-            f"Download GID: {gid}\nStatus: {status['status']}\nProgress: {status['progress']:.2f}%"
+        await app.send_document(
+            chat_id=message.chat.id,
+            document=file_path,
+            progress=upload_progress,
+            progress_args=(message,),
         )
-    else:
-        await message.reply_text("Invalid or missing GID.")
+    except Exception as e:
+        await message.edit_text(f"Error during upload: {str(e)}")
 
-@app.on_message(filters.command("cancel_download"))
-async def cancel_download_command(client: Client, message: Message):
-    """Handles canceling a download via command."""
-    gid = message.text.split(" ", 1)[1] if len(message.command) > 1 else None
-    if gid and gid in download_statuses:
-        try:
-            aria2.remove(gid)
-            download_statuses[gid]['status'] = 'cancelled'
-            await message.reply_text(f"Download {gid} has been cancelled.")
-        except Exception as e:
-            await message.reply_text(f"Error canceling the download: {e}")
-    else:
-        await message.reply_text("Invalid or missing GID.")
 
-async def main():
-    """Starts the Pyrogram client and runs the Aria2 monitoring in the same loop."""
-    await app.start()  # Start the Pyrogram bot
-    
-    # Run the bot indefinitely without blocking the event loop
-    while True:
-        await asyncio.sleep(10)  # Keep the loop alive for 10 seconds at a time
+# Upload progress callback
+async def upload_progress(current: int, total: int, message: Message):
+    try:
+        progress = (current / total) * 100
+        await message.edit_text(f"Uploading... {progress:.2f}%")
+    except Exception as e:
+        logging.error(f"Error updating upload progress: {str(e)}")
 
+
+# Command handler to download and upload a file
+@app.on_message(filters.command("filelink"))
+async def handle_filelink(client: Client, message: Message):
+    if len(message.command) < 2:
+        await message.reply("Please provide a valid URL or torrent link. Example: /filelink <url>")
+        return
+
+    link = message.command[1]
+
+    progress_message = await message.reply("Preparing to download...")
+
+    try:
+        # Download file with aria2p
+        downloaded_file = await download_with_aria2p(link, progress_message)
+
+        # Notify user download is complete
+        await progress_message.edit_text("Download complete. Uploading...")
+
+        # Upload file
+        await upload_file(progress_message, downloaded_file)
+
+        # Notify user of success
+        await progress_message.edit_text("File uploaded successfully!")
+
+        # Clean up downloaded file
+        os.remove(downloaded_file)
+
+    except Exception as e:
+        await progress_message.edit_text(f"An error occurred: {str(e)}")
+
+
+# Command handler for /start
+@app.on_message(filters.command("start"))
+async def start(client: Client, message: Message):
+    await message.reply(
+        "Hello! Use /filelink <url> to download and upload a file to Telegram. "
+        "Supports both direct links and torrent links."
+    )
+
+
+# Run the bot
 if __name__ == "__main__":
-    # Run the main function inside the asyncio event loop
-    asyncio.run(main())
+    try:
+        # Ensure aria2c is running
+        start_aria2c_daemon()
+        app.run()
+    except Exception as e:
+        logging.error(f"Failed to start bot: {str(e)}")
