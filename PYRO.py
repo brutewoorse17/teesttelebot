@@ -1,7 +1,6 @@
 import os
 import asyncio
 import logging
-import subprocess
 from pyrogram import Client, filters
 from pyrogram.types import Message
 from aria2p import API, Client as Aria2Client, Download
@@ -29,6 +28,16 @@ aria2 = API(
     Aria2Client(host="http://localhost", port=6800, secret="")
 )
 
+
+# Helper function to safely update the message text
+async def safe_edit_message(message: Message, new_text: str):
+    try:
+        if message.text != new_text:  # Avoid editing if the text is the same
+            await message.edit_text(new_text)
+    except Exception as e:
+        logging.error(f"Error editing message: {str(e)}")
+
+
 # Download using aria2p
 async def download_with_aria2p(link: str, message: Message):
     try:
@@ -38,7 +47,7 @@ async def download_with_aria2p(link: str, message: Message):
             downloads = [downloads]  # Ensure we always handle it as a list
 
         for download in downloads:
-            await message.edit_text(f"Started download: {download.name}")
+            await safe_edit_message(message, f"Started download: {download.name}")
 
             # Monitor download progress
             while not download.is_complete:
@@ -49,16 +58,16 @@ async def download_with_aria2p(link: str, message: Message):
                     if download.total_length > 0
                     else 0
                 )
-                await message.edit_text(f"Downloading... {progress:.2f}%")
+                await safe_edit_message(message, f"Downloading... {progress:.2f}%")
 
             # Notify user that download is complete
-            await message.edit_text(f"Download complete: {download.name}")
+            await safe_edit_message(message, f"Download complete: {download.name}")
 
         # Return the file paths
         return [os.path.join(TEMP_DOWNLOAD_PATH, download.name) for download in downloads]
 
     except Exception as e:
-        await message.edit_text(f"Error during download: {str(e)}")
+        await safe_edit_message(message, f"Error during download: {str(e)}")
         raise
 
 
@@ -73,14 +82,14 @@ async def upload_file(message: Message, file_paths: list):
                 progress_args=(message,),
             )
     except Exception as e:
-        await message.edit_text(f"Error during upload: {str(e)}")
+        await safe_edit_message(message, f"Error during upload: {str(e)}")
 
 
 # Upload progress callback
 async def upload_progress(current: int, total: int, message: Message):
     try:
         progress = (current / total) * 100
-        await message.edit_text(f"Uploading... {progress:.2f}%")
+        await safe_edit_message(message, f"Uploading... {progress:.2f}%")
     except Exception as e:
         logging.error(f"Error updating upload progress: {str(e)}")
 
@@ -101,20 +110,20 @@ async def handle_filelink(client: Client, message: Message):
         downloaded_files = await download_with_aria2p(link, progress_message)
 
         # Notify user download is complete
-        await progress_message.edit_text("Download complete. Uploading...")
+        await safe_edit_message(progress_message, "Download complete. Uploading...")
 
         # Upload files
         await upload_file(progress_message, downloaded_files)
 
         # Notify user of success
-        await progress_message.edit_text("File(s) uploaded successfully!")
+        await safe_edit_message(progress_message, "File(s) uploaded successfully!")
 
         # Clean up downloaded files
         for downloaded_file in downloaded_files:
             os.remove(downloaded_file)
 
     except Exception as e:
-        await progress_message.edit_text(f"An error occurred: {str(e)}")
+        await safe_edit_message(progress_message, f"An error occurred: {str(e)}")
 
 
 # Command handler for /start
