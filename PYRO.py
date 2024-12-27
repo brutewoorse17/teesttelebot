@@ -44,7 +44,8 @@ def start_aria2c_daemon():
             "--enable-rpc",
             "--rpc-listen-all=true",
             "--rpc-allow-origin-all=true",
-            "--daemon"
+            "--daemon",
+            "--no-check-certificate"  # Disable certificate checking
         ])
         logging.info("aria2c daemon started successfully!")
     except FileNotFoundError:
@@ -65,7 +66,7 @@ async def safe_edit_message(message: Message, text: str):
 # Download using aria2p with SSL verification disabled
 async def download_with_aria2p(link: str, message: Message):
     try:
-        # Add the download to aria2 with check-certificate=false
+        # Add the download to aria2 with SSL certificate checking disabled
         downloads = aria2.add(link, options={"dir": TEMP_DOWNLOAD_PATH, "check-certificate": "false"})
         if not isinstance(downloads, list):
             downloads = [downloads]  # Ensure we always handle it as a list
