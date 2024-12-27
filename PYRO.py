@@ -28,12 +28,16 @@ aria2 = API(
     Aria2Client(host="http://localhost", port=6800, secret="")
 )
 
+# Dictionary to store the last edited message text for each message
+last_message_content = {}
 
 # Helper function to safely update the message text
 async def safe_edit_message(message: Message, new_text: str):
+    global last_message_content
     try:
-        if message.text != new_text:  # Avoid editing if the text is the same
-            await message.edit_text(new_text)
+        if last_message_content.get(message.message_id) != new_text:
+            await message.edit_text(new_text)  # Edit only if the content is different
+            last_message_content[message.message_id] = new_text  # Update the last message content
     except Exception as e:
         logging.error(f"Error editing message: {str(e)}")
 
@@ -60,7 +64,6 @@ async def download_with_aria2p(link: str, message: Message):
                 )
                 await safe_edit_message(message, f"Downloading... {progress:.2f}%")
 
-            # Notify user that download is complete
             await safe_edit_message(message, f"Download complete: {download.name}")
 
         # Return the file paths
@@ -109,13 +112,11 @@ async def handle_filelink(client: Client, message: Message):
         # Download file with aria2p
         downloaded_files = await download_with_aria2p(link, progress_message)
 
-        # Notify user download is complete
         await safe_edit_message(progress_message, "Download complete. Uploading...")
 
         # Upload files
         await upload_file(progress_message, downloaded_files)
 
-        # Notify user of success
         await safe_edit_message(progress_message, "File(s) uploaded successfully!")
 
         # Clean up downloaded files
