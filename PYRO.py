@@ -29,6 +29,9 @@ aria2 = API(
     Aria2Client(host="http://localhost", port=6800, secret="")
 )
 
+# Dictionary to keep track of active downloads
+active_downloads = {}
+
 # Function to ensure aria2c is running
 def start_aria2c_daemon():
     try:
@@ -76,6 +79,9 @@ async def download_with_aria2p(link: str, message: Message):
 
         # Since aria2.add() returns a list, we access the first download
         download = downloads[0]
+
+        # Track the download using its gid (Global ID)
+        active_downloads[download.gid] = download
 
         await safe_edit_message(message, f"Started download: {download.name}")
 
@@ -152,8 +158,29 @@ async def handle_filelink(client: Client, message: Message):
 async def start(client: Client, message: Message):
     await message.reply(
         "Hello! Use /filelink <url> to download and upload a file to Telegram. "
-        "Supports both direct links and torrent links."
+        "Supports both direct links and torrent links. You can also cancel downloads with /cancel <download_id>."
     )
+
+# Command handler to cancel download
+@app.on_message(filters.command("cancel"))
+async def cancel_download(client: Client, message: Message):
+    if len(message.command) < 2:
+        await message.reply("Please provide a download ID to cancel. Example: /cancel <download_id>")
+        return
+
+    download_id = message.command[1]
+
+    if download_id in active_downloads:
+        download = active_downloads[download_id]
+        try:
+            # Abort the download
+            aria2.remove(download.gid, force=True)
+            await safe_edit_message(message, f"Download {download.name} (ID: {download.gid}) has been canceled.")
+            del active_downloads[download.gid]  # Remove from active downloads
+        except Exception as e:
+            await safe_edit_message(message, f"Error canceling download: {str(e)}")
+    else:
+        await message.reply(f"No active download found with ID: {download_id}")
 
 # Command handler to show active, waiting, and failed downloads
 @app.on_message(filters.command("status"))
