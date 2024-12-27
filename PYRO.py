@@ -1,6 +1,7 @@
 import os
 import asyncio
 import logging
+import subprocess
 from pyrogram import Client, filters
 from pyrogram.types import Message
 from aria2p import API, Client as Aria2Client, Download
@@ -20,21 +21,35 @@ TEMP_DOWNLOAD_PATH = "./downloads"
 if not os.path.exists(TEMP_DOWNLOAD_PATH):
     os.makedirs(TEMP_DOWNLOAD_PATH)
 
-# Create a Pyrogram client
-app = Client("my_bot", api_id=api_id, api_hash=api_hash, bot_token=bot_token)
-
-# Connect to aria2c RPC
+# Connect to aria2 RPC
 aria2 = API(
-    Aria2Client(host="http://localhost", port=6800, secret="")  # Update `secret` if you've set an RPC secret
+    Aria2Client(host="http://localhost", port=6800, secret="")
 )
 
 # Function to ensure aria2c is running
 def start_aria2c_daemon():
     try:
-        os.system("aria2c --enable-rpc --rpc-listen-all=true --rpc-allow-origin-all --daemon")
+        # Check if aria2c is already running
+        result = subprocess.run(["pgrep", "-x", "aria2c"], stdout=subprocess.PIPE)
+        if result.returncode == 0:
+            logging.info("aria2c is already running.")
+            return
+
+        # Start aria2c with RPC enabled
+        subprocess.Popen([
+            "aria2c",
+            "--enable-rpc",
+            "--rpc-listen-all=true",
+            "--rpc-allow-origin-all=true",
+            "--daemon"
+        ])
         logging.info("aria2c daemon started successfully!")
+    except FileNotFoundError:
+        logging.error("aria2c is not installed. Please install aria2c and try again.")
+        raise
     except Exception as e:
         logging.error(f"Failed to start aria2c daemon: {str(e)}")
+        raise
 
 
 # Download using aria2p
@@ -126,6 +141,9 @@ async def start(client: Client, message: Message):
 
 # Run the bot
 if __name__ == "__main__":
-    # Ensure aria2c is running
-    start_aria2c_daemon()
-    app.run()
+    try:
+        # Ensure aria2c is running
+        start_aria2c_daemon()
+        app.run()
+    except Exception as e:
+        logging.error(f"Failed to start bot: {str(e)}")
